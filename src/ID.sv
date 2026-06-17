@@ -39,6 +39,7 @@ decoder u_decoder(
     .d_bus (d_bus        )
 );
 
-assign ID_to_RR_BUS = '{pc: id_bus_r.pc, d_bus: d_bus};
+assign ID_to_RR_BUS = '{pc: id_bus_r.pc, d_bus: d_bus,
+                        bp_taken: id_bus_r.bp_taken, bp_target: id_bus_r.bp_target};
 
 endmodule

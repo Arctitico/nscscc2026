@@ -28,9 +28,11 @@ module RF (
 reg            rf_valid;
 is_to_rf_bus_t rf_bus_r; // 输入锁存
 
-// 解开直通封装，取出 {pc, d_bus}
+// 解开直通封装，取出 {pc, d_bus, 预测信息}
 wire [31:0] pc = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.pc;
 d_bus_t     db = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.d_bus;
+wire        bp_taken_r  = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.bp_taken;
+wire [31:0] bp_target_r = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.bp_target;
 
 assign rf_raddr1 = db.rj;
 assign rf_raddr2 = db.src_reg_is_rd ? db.rd : db.rk;
@@ -88,6 +90,8 @@ assign RF_to_EX_BUS = '{
     inst_jirl:     db.inst_jirl,
     inst_beq:      db.inst_beq,
     inst_bne:      db.inst_bne,
+    bp_taken:      bp_taken_r,
+    bp_target:     bp_target_r,
     is_ld:         db.is_ld,
     is_st:         db.is_st,
     is_st_b:       db.is_st_b,

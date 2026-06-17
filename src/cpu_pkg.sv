@@ -48,15 +48,20 @@ typedef struct packed {
 } d_bus_t;
 
 // IF -> ID
+// bp_taken/bp_target：IF 取本指令时分支预测器给出的预测，沿流水带到 EX 比对误预测。
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
+    logic        bp_taken;     // 预测是否跳转
+    logic [31:0] bp_target;    // 预测目标（bp_taken=1 时有效）
 } if_to_id_bus_t;
 
 // ID -> RR
 typedef struct packed {
     logic [31:0] pc;
     d_bus_t      d_bus;
+    logic        bp_taken;     // 透传预测（RR/DP/IS 直通级裹本结构自动携带）
+    logic [31:0] bp_target;
 } id_to_rr_bus_t;
 
 // RR -> DP（直通：裹一层 id_to_rr_bus_t，乱序时扩展重命名信息）
@@ -87,6 +92,8 @@ typedef struct packed {
     logic        inst_jirl;
     logic        inst_beq;
     logic        inst_bne;
+    logic        bp_taken;     // 取指时的预测方向（EX 比对误预测）
+    logic [31:0] bp_target;    // 取指时的预测目标
     // 访存
     logic        is_ld;
     logic        is_st;

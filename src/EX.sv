@@ -13,8 +13,16 @@ module EX (
     input  rf_to_ex_bus_t   RF_to_EX_BUS,
     output ex_to_wb_bus_t   EX_to_WB_BUS,
 
-    output wire             br_taken,
-    output wire   [31:0]    br_target,
+    // 预测错误时，重定向
+    output wire             redirect,
+    output wire   [31:0]    redirect_target,
+
+    // 分支预测器更新
+    output wire             bp_upd_en,
+    output wire   [31:0]    bp_upd_pc,
+    output wire             bp_upd_taken,
+    output wire             bp_upd_is_cond,
+    output wire   [31:0]    bp_upd_target,
 
     output fwd_bus_t        ex_fwd,
 
@@ -55,9 +63,23 @@ alu u_alu(
 wire        eq         = (eb.alu_src1 == eb.rkd_value);
 wire        uncond     = eb.is_branch & ~eb.inst_beq & ~eb.inst_bne;
 wire        cond_taken = (eb.inst_beq & eq) | (eb.inst_bne & ~eq);
-assign br_taken  = ex_valid & (uncond | cond_taken);
-assign br_target = eb.inst_jirl ? (eb.alu_src1 + eb.imm)    // jirl
-                                : (eb.pc       + eb.imm);   // b/bl/beq/bne
+wire        br_taken   = ex_valid & (uncond | cond_taken);
+wire [31:0] br_target  = eb.inst_jirl ? (eb.alu_src1 + eb.imm)    // jirl
+                                      : (eb.pc       + eb.imm);   // b/bl/beq/bne
+
+// 对于分支指令，预测错误时，重定向
+// 分为 direction 错误和 target 错误两种情况
+wire dir_wrong = eb.bp_taken ^ br_taken;
+wire tgt_wrong = br_taken & eb.bp_taken & (br_target != eb.bp_target);
+assign redirect        = ex_valid & eb.is_branch & (dir_wrong | tgt_wrong);
+assign redirect_target = br_taken ? br_target : (eb.pc + 32'd4);
+
+// 分支预测器更新
+assign bp_upd_en      = EX_to_WB_valid & WB_allow_in & eb.is_branch;
+assign bp_upd_pc      = eb.pc;
+assign bp_upd_taken   = br_taken;
+assign bp_upd_is_cond = eb.inst_beq | eb.inst_bne;
+assign bp_upd_target  = br_target;
 
 wire [ 3:0] st_wstrb = eb.is_st_b ? (4'b0001 << alu_result[1:0]) : 4'b1111;
 wire [31:0] st_wdata = eb.is_st_b ? {4{eb.rkd_value[7:0]}}       : eb.rkd_value;

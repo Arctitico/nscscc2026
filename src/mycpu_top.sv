@@ -63,10 +63,20 @@ rf_to_ex_bus_t RF_to_EX_BUS;
 ex_to_wb_bus_t EX_to_WB_BUS;
 wb_to_cm_bus_t WB_to_CM_BUS;
 
-// ---- 分支重定向 / 冲刷 ----
-wire        br_taken;
-wire [31:0] br_target;
-wire        flush = br_taken;   // 清空 ID..RF
+// ---- 分支预测 / 误预测重定向 / 冲刷 ----
+wire        bp_pred_taken;
+wire [31:0] bp_pred_target;
+wire [31:0] bp_pc;
+
+wire        redirect;            // EX 检测到误预测
+wire [31:0] redirect_target;
+wire        flush = redirect;    // 误预测时清空 ID..RF
+
+wire        bp_upd_en;
+wire [31:0] bp_upd_pc;
+wire        bp_upd_taken;
+wire        bp_upd_is_cond;
+wire [31:0] bp_upd_target;
 
 // ---- 前递总线 ----
 fwd_bus_t ex_fwd;
@@ -87,17 +97,20 @@ assign inst_sram_wdata = 32'b0;
 
 // ============================ 流水级例化 ============================
 IF u_IF (
-    .clk            (clk            ),
-    .reset          (reset          ),
-    .IF_to_ID_valid (IF_to_ID_valid ),
-    .ID_allow_in    (ID_allow_in    ),
-    .IF_to_ID_BUS   (IF_to_ID_BUS   ),
-    .br_taken       (br_taken       ),
-    .br_target      (br_target      ),
-    .inst_sram_en   (inst_sram_en   ),
-    .inst_sram_addr (inst_sram_addr ),
-    .inst_sram_rdata(inst_sram_rdata),
-    .inst_ok        (inst_ok        )
+    .clk             (clk             ),
+    .reset           (reset           ),
+    .IF_to_ID_valid  (IF_to_ID_valid  ),
+    .ID_allow_in     (ID_allow_in     ),
+    .IF_to_ID_BUS    (IF_to_ID_BUS    ),
+    .bp_pc           (bp_pc           ),
+    .bp_taken        (bp_pred_taken   ),
+    .bp_target       (bp_pred_target  ),
+    .redirect        (redirect        ),
+    .redirect_target (redirect_target ),
+    .inst_sram_en    (inst_sram_en    ),
+    .inst_sram_addr  (inst_sram_addr  ),
+    .inst_sram_rdata (inst_sram_rdata ),
+    .inst_ok         (inst_ok         )
 );
 
 ID u_ID (
@@ -176,8 +189,13 @@ EX u_EX (
     .EX_to_WB_valid (EX_to_WB_valid ),
     .RF_to_EX_BUS   (RF_to_EX_BUS   ),
     .EX_to_WB_BUS   (EX_to_WB_BUS   ),
-    .br_taken       (br_taken       ),
-    .br_target      (br_target      ),
+    .redirect       (redirect       ),
+    .redirect_target(redirect_target),
+    .bp_upd_en      (bp_upd_en      ),
+    .bp_upd_pc      (bp_upd_pc      ),
+    .bp_upd_taken   (bp_upd_taken   ),
+    .bp_upd_is_cond (bp_upd_is_cond ),
+    .bp_upd_target  (bp_upd_target  ),
     .ex_fwd         (ex_fwd         ),
     .data_sram_en   (data_sram_en   ),
     .data_sram_we   (data_sram_we   ),
@@ -225,6 +243,20 @@ regfile u_regfile (
     .rf_raddr4(5'b0     ), .rf_rdata4(rf_rdata4),
     .rf_we1   (rf_we1   ), .rf_waddr1(rf_waddr1), .rf_wdata1(rf_wdata1),
     .rf_we2   (4'b0     ), .rf_waddr2(5'b0     ), .rf_wdata2(32'b0    )
+);
+
+// ============================ 分支预测 ============================
+bpu u_bpu (
+    .clk          (clk           ),
+    .reset        (reset         ),
+    .pred_pc      (bp_pc         ),
+    .pred_taken   (bp_pred_taken ),
+    .pred_target  (bp_pred_target),
+    .upd_en       (bp_upd_en     ),
+    .upd_pc       (bp_upd_pc     ),
+    .upd_taken    (bp_upd_taken  ),
+    .upd_is_cond  (bp_upd_is_cond),
+    .upd_target   (bp_upd_target )
 );
 
 endmodule
