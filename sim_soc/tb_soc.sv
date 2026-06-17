@@ -2,7 +2,7 @@
 // tb_soc.sv —— SoC 级功能仿真（verilator --binary --timing）
 //
 // 跑「真实多周期访存路径」：thinpad_top（mycpu_top + mem_bridge）对接行为级异步
-// SRAM 模型，验证 inst_ok/data_ok 停顿、地址译码、BaseRAM 取指 ∥ 访存「访存优先」
+// SRAM 模型，验证 icache 突发重填/data_ok 停顿、地址译码、BaseRAM 取指 ∥ 访存「访存优先」
 // 仲裁（本测试代码与数据同在 BaseRAM，恰好压同片仲裁这一最关键路径）。
 //
 // 程序复用 sim/asm.py 生成的 test.hex（装载基址 0x80000000，与片内字地址 [21:2] 同序）。

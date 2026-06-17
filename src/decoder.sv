@@ -1,8 +1,5 @@
 // ============================================================================
 // decoder
-//
-//   addi.w add.w sub.w lu12i.w pcaddu12i or ori andi and xor srli.w slli.w
-//   jirl b beq bne bl st.w ld.w st.b ld.b
 // ============================================================================
 module decoder(
     input  wire    [31:0] inst,

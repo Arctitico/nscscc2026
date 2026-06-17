@@ -10,10 +10,10 @@ module tb;
 
     reg clk, resetn;
 
-    wire        inst_sram_en;
-    wire [ 3:0] inst_sram_we;
-    wire [31:0] inst_sram_addr, inst_sram_wdata;
-    wire [31:0] inst_sram_rdata;
+    wire        inst_rd_req;
+    wire [31:0] inst_rd_addr;
+    wire        inst_rd_rdy, inst_ret_valid, inst_ret_last;
+    wire [31:0] inst_ret_data;
 
     wire        data_sram_en;
     wire [ 3:0] data_sram_we;
@@ -27,9 +27,9 @@ module tb;
 
     mycpu_top u_cpu(
         .clk(clk), .resetn(resetn),
-        .inst_sram_en(inst_sram_en), .inst_sram_we(inst_sram_we),
-        .inst_sram_addr(inst_sram_addr), .inst_sram_wdata(inst_sram_wdata),
-        .inst_sram_rdata(inst_sram_rdata), .inst_ok(1'b1),
+        .inst_rd_req(inst_rd_req), .inst_rd_addr(inst_rd_addr),
+        .inst_rd_rdy(inst_rd_rdy), .inst_ret_valid(inst_ret_valid),
+        .inst_ret_data(inst_ret_data), .inst_ret_last(inst_ret_last),
         .data_sram_en(data_sram_en), .data_sram_we(data_sram_we),
         .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
         .data_sram_rdata(data_sram_rdata), .data_ok(1'b1),
@@ -47,9 +47,28 @@ module tb;
         inrange = (addr >= BASE) && (idx(addr) < DEPTH);
     endfunction
 
-    // 组合读
-    assign inst_sram_rdata = inrange(inst_sram_addr) ? mem[idx(inst_sram_addr)] : 32'h0;
+    // 数据口：组合读
     assign data_sram_rdata = inrange(data_sram_addr) ? mem[idx(data_sram_addr)] : 32'h0;
+
+    // 取指口：行为级突发读模型（接受当拍 rd_rdy，随后逐拍回 IWORDS 个字）
+    localparam int IWORDS = 4;
+    reg        iactive;
+    reg [ 2:0] iw;
+    reg [31:0] ibase;
+    wire        iaccept       = inst_rd_req & ~iactive;
+    wire [31:0] ibeat_addr    = ibase + (iw << 2);
+    assign inst_rd_rdy    = iaccept;
+    assign inst_ret_valid = iactive;
+    assign inst_ret_data  = inrange(ibeat_addr) ? mem[idx(ibeat_addr)] : 32'h0;
+    assign inst_ret_last  = iactive & (iw == IWORDS-1);
+    always @(posedge clk) begin
+        if (!resetn)        begin iactive <= 1'b0; iw <= 3'd0; end
+        else if (iaccept)   begin iactive <= 1'b1; iw <= 3'd0; ibase <= inst_rd_addr; end
+        else if (iactive) begin
+            iw <= iw + 3'd1;
+            if (iw == IWORDS-1) iactive <= 1'b0;
+        end
+    end
 
     // 写（时钟沿，按字节使能）
     always @(posedge clk) begin

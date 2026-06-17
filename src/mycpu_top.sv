@@ -10,12 +10,12 @@ module mycpu_top(
     input  wire        clk,
     input  wire        resetn,
 
-    output wire        inst_sram_en,
-    output wire [ 3:0] inst_sram_we,
-    output wire [31:0] inst_sram_addr,
-    output wire [31:0] inst_sram_wdata,
-    input  wire [31:0] inst_sram_rdata,
-    input  wire        inst_ok,
+    output wire        inst_rd_req,
+    output wire [31:0] inst_rd_addr,
+    input  wire        inst_rd_rdy,
+    input  wire        inst_ret_valid,
+    input  wire [31:0] inst_ret_data,
+    input  wire        inst_ret_last,
 
     output wire        data_sram_en,
     output wire [ 3:0] data_sram_we,
@@ -33,7 +33,6 @@ module mycpu_top(
 reg reset;
 always @(posedge clk) reset <= ~resetn;
 
-// ---- 级间 valid ----
 wire IF_to_ID_valid;
 wire ID_to_RR_valid;
 wire RR_to_DP_valid;
@@ -43,7 +42,6 @@ wire RF_to_EX_valid;
 wire EX_to_WB_valid;
 wire WB_to_CM_valid;
 
-// ---- 级间 allow_in ----
 wire ID_allow_in;
 wire RR_allow_in;
 wire DP_allow_in;
@@ -53,7 +51,6 @@ wire EX_allow_in;
 wire WB_allow_in;
 wire CM_allow_in;
 
-// ---- 级间总线 ----
 if_to_id_bus_t IF_to_ID_BUS;
 id_to_rr_bus_t ID_to_RR_BUS;
 rr_to_dp_bus_t RR_to_DP_BUS;
@@ -63,14 +60,13 @@ rf_to_ex_bus_t RF_to_EX_BUS;
 ex_to_wb_bus_t EX_to_WB_BUS;
 wb_to_cm_bus_t WB_to_CM_BUS;
 
-// ---- 分支预测 / 误预测重定向 / 冲刷 ----
 wire        bp_pred_taken;
 wire [31:0] bp_pred_target;
 wire [31:0] bp_pc;
 
-wire        redirect;            // EX 检测到误预测
+wire        redirect;
 wire [31:0] redirect_target;
-wire        flush = redirect;    // 误预测时清空 ID..RF
+wire        flush = redirect;
 
 wire        bp_upd_en;
 wire [31:0] bp_upd_pc;
@@ -78,22 +74,22 @@ wire        bp_upd_taken;
 wire        bp_upd_is_cond;
 wire [31:0] bp_upd_target;
 
-// ---- 前递总线 ----
 fwd_bus_t ex_fwd;
 fwd_bus_t wb_fwd;
 fwd_bus_t cm_fwd;
 
-// ---- 寄存器堆读写 ----
 wire [ 4:0] rf_raddr1, rf_raddr2;
 wire [31:0] rf_rdata1, rf_rdata2;
-wire [31:0] rf_rdata3, rf_rdata4;   // 双发射保留，baseline 不用
+wire [31:0] rf_rdata3, rf_rdata4;   
 wire [ 3:0] rf_we1;
 wire [ 4:0] rf_waddr1;
 wire [31:0] rf_wdata1;
 
-// 取指口不写
-assign inst_sram_we    = 4'b0;
-assign inst_sram_wdata = 32'b0;
+wire        ic_req;
+wire [31:0] ic_addr;
+wire        ic_addr_ok;
+wire        ic_data_ok;
+wire [31:0] ic_rdata;
 
 // ============================ 流水级例化 ============================
 IF u_IF (
@@ -107,10 +103,11 @@ IF u_IF (
     .bp_target       (bp_pred_target  ),
     .redirect        (redirect        ),
     .redirect_target (redirect_target ),
-    .inst_sram_en    (inst_sram_en    ),
-    .inst_sram_addr  (inst_sram_addr  ),
-    .inst_sram_rdata (inst_sram_rdata ),
-    .inst_ok         (inst_ok         )
+    .ic_req          (ic_req          ),
+    .ic_addr         (ic_addr         ),
+    .ic_addr_ok      (ic_addr_ok      ),
+    .ic_data_ok      (ic_data_ok      ),
+    .ic_rdata        (ic_rdata        )
 );
 
 ID u_ID (
@@ -234,7 +231,6 @@ CM u_CM (
 );
 
 // ============================ 寄存器堆 ============================
-// 4 读 2 写为双发射保留；baseline 用读口 1/2 + 写口 1。
 regfile u_regfile (
     .clk      (clk      ),
     .rf_raddr1(rf_raddr1), .rf_rdata1(rf_rdata1),
@@ -257,6 +253,24 @@ bpu u_bpu (
     .upd_taken    (bp_upd_taken  ),
     .upd_is_cond  (bp_upd_is_cond),
     .upd_target   (bp_upd_target )
+);
+
+// ============================ 指令缓存 ============================
+icache u_icache (
+    .clk            (clk            ),
+    .reset          (reset          ),
+    .flush          (flush          ),
+    .req            (ic_req         ),
+    .addr           (ic_addr        ),
+    .addr_ok        (ic_addr_ok     ),
+    .data_ok        (ic_data_ok     ),
+    .rdata          (ic_rdata       ),
+    .inst_rd_req    (inst_rd_req    ),
+    .inst_rd_addr   (inst_rd_addr   ),
+    .inst_rd_rdy    (inst_rd_rdy    ),
+    .inst_ret_valid (inst_ret_valid ),
+    .inst_ret_data  (inst_ret_data  ),
+    .inst_ret_last  (inst_ret_last  )
 );
 
 endmodule

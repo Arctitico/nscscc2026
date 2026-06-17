@@ -6,7 +6,7 @@
 // 也能被模版 sim_1/new/tb.sv（接 sram_model + cpld 串口模型）仿真。
 //
 // 结构：clk = clk_50M（直接用，复位为 reset_btn 同步后高有效）；
-//   mycpu_top（顺序单发射，类 SRAM 双口 + inst_ok/data_ok 停顿）
+//   mycpu_top（顺序单发射，取指突发读口 + 访存单字 data_ok 停顿）
 //     ↕ mem_bridge（地址译码 + 访存优先仲裁 + BaseRAM/ExtRAM 多周期控制器 + UART）
 //   物理 inout 数据线的三态在本层完成。其余外设（Flash/VGA/数码管/LED）置为非活动。
 //
@@ -75,10 +75,12 @@ always @(posedge clk) rst_sync <= {rst_sync[0], reset_btn};
 wire rst = rst_sync[1];
 
 // ---------------- CPU ↔ 桥 内部连线 ----------------
-wire        inst_sram_en;
-wire [31:0] inst_sram_addr;
-wire [31:0] inst_sram_rdata;
-wire        inst_ok;
+wire        inst_rd_req;
+wire [31:0] inst_rd_addr;
+wire        inst_rd_rdy;
+wire        inst_ret_valid;
+wire [31:0] inst_ret_data;
+wire        inst_ret_last;
 
 wire        data_sram_en;
 wire [ 3:0] data_sram_we;
@@ -98,12 +100,12 @@ assign ext_ram_data  = ext_ram_we_n  ? 32'bz : ext_ram_wdat;
 mycpu_top u_cpu (
     .clk            (clk            ),
     .resetn         (~rst           ),
-    .inst_sram_en   (inst_sram_en   ),
-    .inst_sram_we   (               ),   // 取指口只读
-    .inst_sram_addr (inst_sram_addr ),
-    .inst_sram_wdata(               ),
-    .inst_sram_rdata(inst_sram_rdata ),
-    .inst_ok        (inst_ok        ),
+    .inst_rd_req    (inst_rd_req    ),
+    .inst_rd_addr   (inst_rd_addr   ),
+    .inst_rd_rdy    (inst_rd_rdy    ),
+    .inst_ret_valid (inst_ret_valid ),
+    .inst_ret_data  (inst_ret_data  ),
+    .inst_ret_last  (inst_ret_last  ),
     .data_sram_en   (data_sram_en   ),
     .data_sram_we   (data_sram_we   ),
     .data_sram_addr (data_sram_addr ),
@@ -120,10 +122,12 @@ mycpu_top u_cpu (
 mem_bridge #(.SRAM_LATENCY(2)) u_bridge (
     .clk            (clk            ),
     .reset          (rst            ),
-    .inst_sram_en   (inst_sram_en   ),
-    .inst_sram_addr (inst_sram_addr ),
-    .inst_sram_rdata(inst_sram_rdata),
-    .inst_ok        (inst_ok        ),
+    .inst_rd_req    (inst_rd_req    ),
+    .inst_rd_addr   (inst_rd_addr   ),
+    .inst_rd_rdy    (inst_rd_rdy    ),
+    .inst_ret_valid (inst_ret_valid ),
+    .inst_ret_data  (inst_ret_data  ),
+    .inst_ret_last  (inst_ret_last  ),
     .data_sram_en   (data_sram_en   ),
     .data_sram_we   (data_sram_we   ),
     .data_sram_addr (data_sram_addr ),

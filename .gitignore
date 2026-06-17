@@ -4,6 +4,8 @@ obj_dir/
 /sim/test.hex
 /sim_soc/test.hex
 
+soc/README.md
+
 *.vcd
 *.fst
 *.fst.hier
