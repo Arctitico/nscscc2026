@@ -5,6 +5,8 @@
 // 把输入锁存 rr_bus_r 原样裹进 RR_to_DP_BUS 组合输出。实现乱序双发射时在此做
 // 寄存器重命名并扩展 rr_to_dp_bus_t 携带物理寄存器 tag —— 不要删掉本级。
 // ============================================================================
+import cpu_pkg::*;
+
 module RR (
     input  wire             clk,
     input  wire             reset,

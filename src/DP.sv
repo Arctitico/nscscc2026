@@ -4,6 +4,8 @@
 // 【baseline 直通级】把输入锁存 dp_bus_r 原样裹进 DP_to_IS_BUS。实现乱序双发射时
 // 在此把指令分发到发射队列 / 保留站并扩展 dp_to_is_bus_t —— 不要删掉本级。
 // ============================================================================
+import cpu_pkg::*;
+
 module DP (
     input  wire             clk,
     input  wire             reset,

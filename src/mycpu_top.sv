@@ -6,6 +6,8 @@
 //
 // RR/DP/IS 当前为直通缓冲级，为乱序双发射保留（见各模块/ cpu_pkg.sv 注释）
 // ============================================================================
+import cpu_pkg::*;
+
 module mycpu_top(
     input  wire        clk,
     input  wire        resetn,

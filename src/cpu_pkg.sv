@@ -11,6 +11,8 @@
 //   - regfile.sv 的 4 读 2 写端口也是为双发射保留，baseline 只用 1 读对 + 1 写。
 // ============================================================================
 
+package cpu_pkg;
+
 // ---------------------------------------------------------------------------
 // alu_op 编码（12 位 one-hot），必须与 alu.sv 中的 OP_* 常量一致：
 //   bit0 add  bit1 sub  bit2 slt  bit3 sltu  bit4 and  bit5 nor
@@ -145,3 +147,5 @@ typedef struct packed {
     logic [ 4:0] rf_waddr;
     logic [31:0] rf_wdata;
 } fwd_bus_t;
+
+endpackage

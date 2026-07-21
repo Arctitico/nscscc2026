@@ -4,6 +4,8 @@
 // 【baseline 直通级】把输入锁存 is_bus_r 原样裹进 IS_to_RF_BUS。实现乱序双发射时
 // 在此做唤醒/选择（wakeup-select）并扩展 is_to_rf_bus_t —— 不要删掉本级。
 // ============================================================================
+import cpu_pkg::*;
+
 module IS (
     input  wire             clk,
     input  wire             reset,
