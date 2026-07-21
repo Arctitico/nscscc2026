@@ -17,6 +17,7 @@ module CM (
     output fwd_bus_t        cm_fwd,
 
     output wire   [31:0]    debug_wb_pc,
+    output wire   [31:0]    debug_wb_inst,
     output wire   [ 3:0]    debug_wb_rf_we,
     output wire   [ 4:0]    debug_wb_rf_wnum,
     output wire   [31:0]    debug_wb_rf_wdata
@@ -53,6 +54,7 @@ assign cm_fwd = '{
 };
 
 assign debug_wb_pc       = cm_r.pc;
+assign debug_wb_inst     = cm_r.inst;
 assign debug_wb_rf_we    = {4{do_write}};
 assign debug_wb_rf_wnum  = cm_r.rf_waddr;
 assign debug_wb_rf_wdata = cm_r.rf_wdata;

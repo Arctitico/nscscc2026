@@ -62,6 +62,7 @@ typedef struct packed {
 // ID -> RR
 typedef struct packed {
     logic [31:0] pc;
+    logic [31:0] inst;         // 提交调试口需要沿流水保存原始指令
     d_bus_t      d_bus;
     logic        bp_taken;     // 透传预测（RR/DP/IS 直通级裹本结构自动携带）
     logic [31:0] bp_target;
@@ -85,6 +86,7 @@ typedef struct packed {
 // RF -> EX：已完成寄存器读 + 前递 + 源操作数选择
 typedef struct packed {
     logic [31:0] pc;
+    logic [31:0] inst;
     logic [31:0] imm;
     logic [11:0] alu_op;
     logic [31:0] alu_src1;     // src1_is_pc ? pc : 前递后的 rj
@@ -114,6 +116,7 @@ typedef struct packed {
 // EX -> WB：ALU 结果 + 原始访存读数据 + 写回控制
 typedef struct packed {
     logic [31:0] pc;
+    logic [31:0] inst;
     logic [31:0] alu_result;   // 计算结果，加载/存储时为访存地址
     logic [31:0] mem_rdata;    // 原始 data_sram_rdata（组合读，EX 周期锁存）
     logic [ 1:0] addr_lo;      // 访存地址低 2 位（字节/半字选择）
@@ -127,6 +130,7 @@ typedef struct packed {
 // WB -> CM：最终写回数据
 typedef struct packed {
     logic [31:0] pc;
+    logic [31:0] inst;
     logic [31:0] rf_wdata;
     logic        rf_we;
     logic [ 4:0] rf_waddr;

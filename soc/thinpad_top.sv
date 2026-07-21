@@ -85,6 +85,7 @@ wire        inst_ret_last;
 
 wire        data_sram_en;
 wire [ 3:0] data_sram_we;
+wire [ 2:0] data_sram_size_unused;
 wire [31:0] data_sram_addr;
 wire [31:0] data_sram_wdata;
 wire [31:0] data_sram_rdata;
@@ -109,11 +110,13 @@ mycpu_top u_cpu (
     .inst_ret_last  (inst_ret_last  ),
     .data_sram_en   (data_sram_en   ),
     .data_sram_we   (data_sram_we   ),
+    .data_sram_size (data_sram_size_unused),
     .data_sram_addr (data_sram_addr ),
     .data_sram_wdata(data_sram_wdata ),
     .data_sram_rdata(data_sram_rdata ),
     .data_ok        (data_ok        ),
     .debug_wb_pc      (),
+    .debug_wb_inst    (),
     .debug_wb_rf_we   (),
     .debug_wb_rf_wnum (),
     .debug_wb_rf_wdata()

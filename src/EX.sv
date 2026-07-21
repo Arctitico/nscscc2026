@@ -28,6 +28,7 @@ module EX (
 
     output wire             data_sram_en,
     output wire   [ 3:0]    data_sram_we,
+    output wire   [ 2:0]    data_sram_size,
     output wire   [31:0]    data_sram_addr,
     output wire   [31:0]    data_sram_wdata,
     input  wire   [31:0]    data_sram_rdata,
@@ -109,11 +110,13 @@ wire [31:0] st_wdata = eb.is_st_b ? {4{eb.rkd_value[7:0]}}       : eb.rkd_value;
 
 assign data_sram_en    = ex_valid & (eb.is_ld | eb.is_st);
 assign data_sram_we    = (ex_valid & eb.is_st) ? st_wstrb : 4'b0;
+assign data_sram_size  = (eb.is_st_b | (eb.is_ld & (eb.ld_width == 4'b0001))) ? 3'b000 : 3'b010;
 assign data_sram_addr  = alu_result;
 assign data_sram_wdata = st_wdata;
 
 assign EX_to_WB_BUS = '{
     pc:            eb.pc,
+    inst:          eb.inst,
     alu_result:    execute_result,
     mem_rdata:     data_sram_rdata,
     addr_lo:       alu_result[1:0],

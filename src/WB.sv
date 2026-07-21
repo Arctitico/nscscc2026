@@ -60,6 +60,7 @@ end
 
 assign WB_to_CM_BUS = '{
     pc:       wb_r.pc,
+    inst:     wb_r.inst,
     rf_wdata: rf_wdata,
     rf_we:    wb_r.rf_we,
     rf_waddr: wb_r.rf_waddr

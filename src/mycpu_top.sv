@@ -19,12 +19,14 @@ module mycpu_top(
 
     output wire        data_sram_en,
     output wire [ 3:0] data_sram_we,
+    output wire [ 2:0] data_sram_size,
     output wire [31:0] data_sram_addr,
     output wire [31:0] data_sram_wdata,
     input  wire [31:0] data_sram_rdata,
     input  wire        data_ok,
 
     output wire [31:0] debug_wb_pc,
+    output wire [31:0] debug_wb_inst,
     output wire [ 3:0] debug_wb_rf_we,
     output wire [ 4:0] debug_wb_rf_wnum,
     output wire [31:0] debug_wb_rf_wdata
@@ -196,6 +198,7 @@ EX u_EX (
     .ex_fwd         (ex_fwd         ),
     .data_sram_en   (data_sram_en   ),
     .data_sram_we   (data_sram_we   ),
+    .data_sram_size (data_sram_size ),
     .data_sram_addr (data_sram_addr ),
     .data_sram_wdata(data_sram_wdata),
     .data_sram_rdata(data_sram_rdata),
@@ -225,6 +228,7 @@ CM u_CM (
     .rf_wdata1        (rf_wdata1        ),
     .cm_fwd           (cm_fwd           ),
     .debug_wb_pc      (debug_wb_pc      ),
+    .debug_wb_inst    (debug_wb_inst    ),
     .debug_wb_rf_we   (debug_wb_rf_we   ),
     .debug_wb_rf_wnum (debug_wb_rf_wnum ),
     .debug_wb_rf_wdata(debug_wb_rf_wdata)
@@ -260,6 +264,8 @@ icache u_icache (
     .clk            (clk            ),
     .reset          (reset          ),
     .flush          (flush          ),
+    .snoop_valid    (data_sram_en & (|data_sram_we)),
+    .snoop_addr     (data_sram_addr ),
     .req            (ic_req         ),
     .addr           (ic_addr        ),
     .addr_ok        (ic_addr_ok     ),

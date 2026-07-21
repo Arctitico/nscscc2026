@@ -8,6 +8,9 @@ module icache #(
     input  wire        clk,
     input  wire        reset,
     input  wire        flush,
+    // 数据口写代码区时按地址失效，保证 supervisor A/G 自修改代码可见。
+    input  wire        snoop_valid,
+    input  wire [31:0] snoop_addr,
 
     input  wire        req,
     input  wire [31:0] addr,
@@ -155,6 +158,9 @@ reg [31:0]         data0_q, data1_q;
 
 reg [NSETS-1:0] valid0, valid1;
 
+wire [IDX_BITS-1:0] snoop_idx = snoop_addr[OFF +: IDX_BITS];
+wire [TAG_BITS-1:0] snoop_tag = snoop_addr[32-TAG_BITS +: TAG_BITS];
+
 wire we0 = refill_word & (rfl_way == 1'b0);
 wire we1 = refill_word & (rfl_way == 1'b1);
 
@@ -182,9 +188,17 @@ always @(posedge clk) begin
     if (reset) begin
         valid0 <= '0;
         valid1 <= '0;
-    end else if (refill_last) begin
-        if (rfl_way) valid1[req_idx] <= 1'b1;
-        else         valid0[req_idx] <= 1'b1;
+    end else begin
+        if (refill_last) begin
+            if (rfl_way) valid1[req_idx] <= 1'b1;
+            else         valid0[req_idx] <= 1'b1;
+        end
+        if (snoop_valid) begin
+            if (valid0[snoop_idx] && (tag0_mem[snoop_idx] == snoop_tag))
+                valid0[snoop_idx] <= 1'b0;
+            if (valid1[snoop_idx] && (tag1_mem[snoop_idx] == snoop_tag))
+                valid1[snoop_idx] <= 1'b0;
+        end
     end
 end
 

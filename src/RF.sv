@@ -30,6 +30,7 @@ is_to_rf_bus_t rf_bus_r; // 输入锁存
 
 // 解开直通封装，取出 {pc, d_bus, 预测信息}
 wire [31:0] pc = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.pc;
+wire [31:0] inst = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.inst;
 d_bus_t     db = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.d_bus;
 wire        bp_taken_r  = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.bp_taken;
 wire [31:0] bp_target_r = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.bp_target;
@@ -81,6 +82,7 @@ end
 
 assign RF_to_EX_BUS = '{
     pc:            pc,
+    inst:          inst,
     imm:           db.imm,
     alu_op:        db.alu_op,
     alu_src1:      alu_src1,

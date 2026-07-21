@@ -1,41 +1,66 @@
 # 2026 LoongArch 个人赛 baseline
 
-当前 `main` 是顺序单发射 baseline；顺序双发射演进保存在 `dual-issue-wip` 分支。
+当前 `main` 是顺序单发射 baseline；双发射演进保存在 `dual-issue-wip` 分支。baseline 已接入官方 `nscscc-solo-la-soc` AXI 模板，并通过官方完整 Verilator supervisor 套件。
 
 ## 目录
 
-- `src/`：九级顺序单发射 CPU，内部含分支预测和透明 I-cache。
-- `soc/`：ThinPAD 物理顶层、BaseRAM/ExtRAM 桥和最小 16550 UART。
+- `src/`：CPU 唯一主源码，包含九级顺序单发射核心、I-cache、`core_top` 和 AXI bridge。
+- `soc/`：旧 ThinPAD 物理 SRAM/UART 外壳，保留用于兼容回归，不再是最终推荐集成目标。
 - `sim/`：CPU 核定向测试与随机 DiffTest。
-- `sim_soc/`：SoC 定向/随机回归、第一阶段测试和 supervisor 启动测试。
+- `sim_soc/`：旧 SoC 定向/随机、一级功能和旧 supervisor 启动测试。
+- `scripts/sync_official_soc.sh`：把 `src/` 同步到官方模板的 `rtl/ip/myCPU/`。
 
-## 当前 baseline 能力
+## 当前能力
 
 - 复位 PC：`0x1c000000`。
-- BaseRAM：`0x1c000000–0x1c3fffff`；ExtRAM：`0x1c400000–0x1c7fffff`。
-- UART：`0x1f000000` 数据、`0x1f000005` 状态，115200/8N1。
-- 普通指令：当前 supervisor 与 STREAM/MATRIX/CRYPTONIGHT/MIXED 所需完整子集。
-- `cpucfg`：无 Cache 路线，`CPUCFG[0x10]` 报告 I/D Cache 均不存在。
-- 尚未实现：AXI 顶层、架构可见 Cache 路线的 CSR/DMW/cacop、完整 A/D/G/R 自动回归。
+- 普通指令：官方 supervisor、STREAM、MATRIX、CryptoNight、MIXED 所需完整子集。
+- `cpucfg`：采用架构无 Cache 路线，`CPUCFG[0x10]` 报告 I/D Cache 均不存在。
+- 内部透明 2 路 I-cache，16B cache line；数据口写入相同指令行时自动失效，支持 monitor 下载代码后执行。
+- 官方 `core_top` 32 位 AXI master：I-cache 四拍 burst、load 单拍读、store 独立 AW/W 握手并等待 B 响应。
+- 完整 `debug0_wb_*` 提交信息，包括原始指令 `debug0_wb_inst`。
 
-## 回归
+尚未实现架构可见 Cache 路线的 D-cache、CSR/DMW/cacop，也未完成 Vivado XSIM、综合时序和上板验证。
+
+## 官方模板集成
+
+`individual/src/` 是唯一需要手工修改的 CPU 源码。修改后执行：
+
+```bash
+cd nscscc2026/individual
+./scripts/sync_official_soc.sh
+
+cd ../nscscc-solo-la-soc
+git submodule update --init --recursive
+python3 sim/run.py sdk/software/examples/supervisor/sim/suite.json --prepare
+```
+
+同步时 `cpu_pkg.sv` 会复制为 `00_cpu_pkg.sv`，确保官方按文件名排序收集源码时，类型定义先于使用它的模块。官方模板是独立嵌套 Git 仓库；不要在模板副本里单独修改 CPU，否则下一次同步会覆盖改动。
+
+当前官方套件已验证：
+
+- SIMPLE 启动和执行；
+- STREAM 3 MiB 结果比对；
+- MATRIX 64 KiB 结果比对；
+- MIXED 20B signature；
+- CryptoNight 2 MiB 结果比对；
+- Fibonacci `A/D/G/R/D` UART 闭环。
+
+## 本仓回归
 
 ```bash
 cd sim
-make                         # 定向指令/前递/分支/访存
-make rand SEED=42 N=300      # 单个随机种子
-make fuzz COUNT=50 N=200     # 多种子 DiffTest
+make
+make rand SEED=42 N=300
+make fuzz COUNT=50 N=200
 make lint
 
 cd ../sim_soc
-make                         # 多周期 SRAM + 新地址空间
-make level1                  # 52 字节程序、64 项 Fibonacci
-make supervisor              # auto kernel + CPUCFG + 115200 UART 欢迎词
+make
+make level1
+make supervisor
 make rand SEED=42 N=300
 make fuzz COUNT=30 N=200
 make lint
 ```
 
-`make supervisor` 默认使用 `../../bin/kernel_07161555.bin`；可通过 `KERNEL_BIN=...` 指定其它兼容镜像。加 `+trace_boot` 需要手动运行生成的仿真程序，用于打印启动取指和提交流。
-
-生成物包括 `test.hex`、`level1.hex`、`kernel.hex`、`golden_trace.hex`、`golden_mem.hex` 和 `obj_dir/`，`make clean` 会清理。
+`make clean` 只清理生成的 hex/meta 和 `obj_dir/`。
