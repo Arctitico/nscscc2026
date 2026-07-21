@@ -1,28 +1,25 @@
 // ============================================================================
-// uart_mm —— 内存映射串口（监控程序约定）
+// uart_mm —— 2026 supervisor 使用的最小 16550 风格内存映射 UART
 //
-// 复用官方模版 async.v 里的 RS-232 收发器（async_transmitter/async_receiver，
-// 9600/8/N/1，监控程序正是按它收发），外裹一层寄存器访问：
-//   0xBFD003F8（reg_sel=addr[2]=0）数据寄存器：读=接收字节{24'b0,rx}；写=发送 wdata[7:0]
-//   0xBFD003FC（reg_sel=1）         状态寄存器：读={…, bit1=接收有数据, bit0=发送就绪}
-// 监控程序轮询状态：发送前等 bit0=1 再写数据；接收前等 bit1=1 再读数据。
+// 物理地址由 mem_bridge 译码，本模块接收窗口内低 3 位偏移：
+//   +0 UART_DATA：写低 8 位发送，读返回接收字节
+//   +5 UART_STATUS：bit0=RX_READY，bit5=TX_READY
+// supervisor 初始化还会写 +1/+2/+3/+4；这里保存最小 DLAB/LCR 状态并安全忽略
+// 无关配置。物理串口固定为 115200 baud、8N1。
 //
-// 握手与 sram_ctrl 一致（req 保持到 ok，tag 原样带回）；寄存器访问 1 拍完成。
-// 注：async_transmitter/async_receiver 来自模版 async.v，本仓不复制，Vivado 工程
-//     沿用模版那份；Verilator SoC 仿真在 Makefile 里按路径带上模版 async.v。
+// CPU 的 ld.b 在 WB 按地址低两位选择 byte lane，因此读字节必须放到地址对应
+// 的 32 位 lane 中；例如 +5 的状态字节放在 rdata[15:8]。
 // ============================================================================
 module uart_mm (
     input  wire        clk,
     input  wire        reset,
 
-    // 直连串口物理引脚
     output wire        txd,
     input  wire        rxd,
 
-    // 请求侧（单口；req 保持到 ok）
     input  wire        req,
-    input  wire [ 3:0] wstrb,    // 0=读，非 0=写
-    input  wire        reg_sel,  // addr[2]：0=数据寄存器，1=状态寄存器
+    input  wire [ 3:0] wstrb,
+    input  wire [ 2:0] addr_offset,
     input  wire [31:0] wdata,
     input  wire        tag_in,
     output reg         ok,
@@ -30,7 +27,6 @@ module uart_mm (
     output reg         tag_out
 );
 
-// ---- 物理收发器（官方 PHY，9600/8/N/1）----
 reg        tx_start;
 reg  [7:0] tx_data;
 wire       tx_busy;
@@ -38,50 +34,91 @@ wire       rx_ready;
 wire [7:0] rx_data;
 reg        rx_clear;
 
-async_transmitter #(.ClkFrequency(50_000_000), .Baud(9600)) u_tx (
-    .clk      (clk     ),
+async_transmitter #(.ClkFrequency(50_000_000), .Baud(115200)) u_tx (
+    .clk      (clk),
     .TxD_start(tx_start),
-    .TxD_data (tx_data ),
-    .TxD      (txd     ),
-    .TxD_busy (tx_busy )
+    .TxD_data (tx_data),
+    .TxD      (txd),
+    .TxD_busy (tx_busy)
 );
 
-async_receiver #(.ClkFrequency(50_000_000), .Baud(9600)) u_rx (
-    .clk           (clk     ),
-    .RxD           (rxd     ),
+async_receiver #(.ClkFrequency(50_000_000), .Baud(115200)) u_rx (
+    .clk           (clk),
+    .RxD           (rxd),
     .RxD_data_ready(rx_ready),
     .RxD_clear     (rx_clear),
-    .RxD_data      (rx_data )
+    .RxD_data      (rx_data)
 );
 
-wire [31:0] status = {30'b0, rx_ready, ~tx_busy};   // bit1=接收有数据 bit0=发送就绪
-wire        is_wr  = |wstrb;
+wire [7:0] status_byte = {2'b0, ~tx_busy, 4'b0, rx_ready};
+wire       is_write    = |wstrb;
 
-localparam S_IDLE = 1'b0, S_DONE = 1'b1;
+// 仅 DLAB 行为会影响 +0/+1 的含义；波特率固定，DLL/DLH 只保存供调试。
+reg [7:0] lcr;
+reg [7:0] dll;
+reg [7:0] dlh;
+wire      dlab = lcr[7];
+
+localparam S_IDLE = 1'b0;
+localparam S_DONE = 1'b1;
 reg state;
+
+function automatic [31:0] place_byte(
+    input [7:0] value,
+    input [1:0] lane
+);
+    place_byte = {24'b0, value} << (lane * 8);
+endfunction
 
 always @(posedge clk) begin
     if (reset) begin
-        state <= S_IDLE; ok <= 1'b0; rdata <= 32'b0; tag_out <= 1'b0;
-        tx_start <= 1'b0; tx_data <= 8'b0; rx_clear <= 1'b0;
+        state     <= S_IDLE;
+        ok        <= 1'b0;
+        rdata     <= 32'b0;
+        tag_out   <= 1'b0;
+        tx_start  <= 1'b0;
+        tx_data   <= 8'b0;
+        rx_clear  <= 1'b0;
+        lcr       <= 8'h03;
+        dll       <= 8'h00;
+        dlh       <= 8'h00;
     end else begin
-        ok <= 1'b0; tx_start <= 1'b0; rx_clear <= 1'b0;   // 默认 1-shot
+        ok       <= 1'b0;
+        tx_start <= 1'b0;
+        rx_clear <= 1'b0;
+
         case (state)
         S_IDLE: if (req) begin
             tag_out <= tag_in;
-            if (reg_sel) begin                            // 状态寄存器（写忽略）
-                rdata <= status;
-            end else if (is_wr) begin                     // 数据寄存器：写 → 发送
-                tx_data  <= wdata[7:0];
-                tx_start <= 1'b1;
-            end else begin                                // 数据寄存器：读 → 取字节并清标志
-                rdata    <= {24'b0, rx_data};
-                rx_clear <= 1'b1;
+            rdata   <= 32'b0;
+
+            if (is_write) begin
+                case (addr_offset)
+                3'd0: if (dlab) dll <= wdata[7:0];
+                      else begin
+                          tx_data  <= wdata[7:0];
+                          tx_start <= 1'b1;
+                      end
+                3'd1: if (dlab) dlh <= wdata[7:0];
+                3'd3: lcr <= wdata[7:0];
+                default: ; // +2 FIFO、+4 modem control：允许写入并忽略
+                endcase
+            end else begin
+                case (addr_offset)
+                3'd0: begin
+                    rdata    <= place_byte(rx_data, addr_offset[1:0]);
+                    rx_clear <= 1'b1;
+                end
+                3'd5: rdata <= place_byte(status_byte, addr_offset[1:0]);
+                default: rdata <= 32'b0;
+                endcase
             end
+
             ok    <= 1'b1;
             state <= S_DONE;
         end
         S_DONE: state <= S_IDLE;
+        default: state <= S_IDLE;
         endcase
     end
 end

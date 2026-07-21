@@ -2,7 +2,7 @@
 // alu.sv —— 算术逻辑单元（纯组合）
 // 按 12 位 one-hot alu_op 选择运算，编码须与 decoder.sv / cpu_pkg.sv 一致：
 //   [0]add [1]sub [2]slt [3]sltu [4]and [5]nor [6]or [7]xor [8]sll [9]srl [10]sra [11]lui
-// C3 baseline 只用到 add/sub/and/or/xor/sll/srl/lui，其余运算保留以备扩展。
+// 2026 单发射 baseline 已使用 add/sub/slt/and/or/xor/sll/srl/lui；其余运算保留以备扩展。
 // ============================================================================
 module alu (
     input  wire [31:0] alu_src1,

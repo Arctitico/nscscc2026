@@ -28,7 +28,7 @@ module IF (
     input  wire   [31:0]    ic_rdata
 );
 
-localparam [31:0] RESET_PC = 32'h8000_0000;
+localparam [31:0] RESET_PC = 32'h1c00_0000;
 
 wire flush = redirect;
 

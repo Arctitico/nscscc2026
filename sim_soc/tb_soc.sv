@@ -3,10 +3,10 @@
 //
 // 跑「真实多周期访存路径」：thinpad_top（mycpu_top + mem_bridge）对接行为级异步
 // SRAM 模型，验证 icache 突发重填/data_ok 停顿、地址译码、BaseRAM 取指 ∥ 访存「访存优先」
-// 仲裁（本测试代码与数据同在 BaseRAM，恰好压同片仲裁这一最关键路径）。
+// 仲裁。本测试按 2026 地址空间把代码放 BaseRAM、数据放 ExtRAM。
 //
-// 程序复用 sim/asm.py 生成的 test.hex（装载基址 0x80000000，与片内字地址 [21:2] 同序）。
-// 自检：① 读 BaseRAM 模型里程序写回的 3 处内存；② 经层次引用窥视 CPU 提交流核对寄存器。
+// 程序复用 sim/asm.py 生成的 test.hex（装载基址 0x1c000000）。
+// 自检：① 读 ExtRAM 模型里的结果；② 经层次引用窥视 CPU 提交流核对寄存器。
 // ============================================================================
 module tb_soc;
     localparam int DEPTH = 'h42000;     // 覆盖到 0x80108000
@@ -56,19 +56,19 @@ module tb_soc;
     assign ext_ram_data  = (~ext_ram_ce_n  & ~ext_ram_oe_n  & ext_ram_we_n )
                          ? ext_mem[ext_ram_addr]  : 32'bz;
 
-    // 写：we 低期间（多拍幂等），按字节使能在 clk 沿写入（此时总线由 thinpad 驱动 wdat）
+    // 写：直接取 DUT 内部 wdat，避免 Verilator 对共享 inout 的组合解析形成环路。
     always @(posedge clk_50M) begin
-        if (~base_ram_ce_n & ~base_ram_we_n) begin
-            if (~base_ram_be_n[0]) base_mem[base_ram_addr][ 7: 0] <= base_ram_data[ 7: 0];
-            if (~base_ram_be_n[1]) base_mem[base_ram_addr][15: 8] <= base_ram_data[15: 8];
-            if (~base_ram_be_n[2]) base_mem[base_ram_addr][23:16] <= base_ram_data[23:16];
-            if (~base_ram_be_n[3]) base_mem[base_ram_addr][31:24] <= base_ram_data[31:24];
+        if (~reset_btn & ~base_ram_ce_n & ~base_ram_we_n) begin
+            if (~base_ram_be_n[0]) base_mem[base_ram_addr][ 7: 0] <= u_dut.base_ram_wdat[ 7: 0];
+            if (~base_ram_be_n[1]) base_mem[base_ram_addr][15: 8] <= u_dut.base_ram_wdat[15: 8];
+            if (~base_ram_be_n[2]) base_mem[base_ram_addr][23:16] <= u_dut.base_ram_wdat[23:16];
+            if (~base_ram_be_n[3]) base_mem[base_ram_addr][31:24] <= u_dut.base_ram_wdat[31:24];
         end
-        if (~ext_ram_ce_n & ~ext_ram_we_n) begin
-            if (~ext_ram_be_n[0]) ext_mem[ext_ram_addr][ 7: 0] <= ext_ram_data[ 7: 0];
-            if (~ext_ram_be_n[1]) ext_mem[ext_ram_addr][15: 8] <= ext_ram_data[15: 8];
-            if (~ext_ram_be_n[2]) ext_mem[ext_ram_addr][23:16] <= ext_ram_data[23:16];
-            if (~ext_ram_be_n[3]) ext_mem[ext_ram_addr][31:24] <= ext_ram_data[31:24];
+        if (~reset_btn & ~ext_ram_ce_n & ~ext_ram_we_n) begin
+            if (~ext_ram_be_n[0]) ext_mem[ext_ram_addr][ 7: 0] <= u_dut.ext_ram_wdat[ 7: 0];
+            if (~ext_ram_be_n[1]) ext_mem[ext_ram_addr][15: 8] <= u_dut.ext_ram_wdat[15: 8];
+            if (~ext_ram_be_n[2]) ext_mem[ext_ram_addr][23:16] <= u_dut.ext_ram_wdat[23:16];
+            if (~ext_ram_be_n[3]) ext_mem[ext_ram_addr][31:24] <= u_dut.ext_ram_wdat[31:24];
         end
     end
 
@@ -102,18 +102,18 @@ module tb_soc;
             $display("  ok   r%0d = %08x", r, arch[r]);
     endtask
     task checkmem(input int word_idx, input [31:0] exp, input [31:0] disp_addr);
-        if (base_mem[word_idx] !== exp) begin
-            $display("  FAIL mem[%08x] = %08x, expected %08x", disp_addr, base_mem[word_idx], exp);
+        if (ext_mem[word_idx] !== exp) begin
+            $display("  FAIL mem[%08x] = %08x, expected %08x", disp_addr, ext_mem[word_idx], exp);
             errors = errors + 1;
         end else
-            $display("  ok   mem[%08x] = %08x", disp_addr, base_mem[word_idx]);
+            $display("  ok   mem[%08x] = %08x", disp_addr, ext_mem[word_idx]);
     endtask
 
     initial begin
         for (i = 0; i < DEPTH; i = i + 1) begin base_mem[i] = 32'h0; ext_mem[i] = 32'h0; end
         for (i = 0; i < 32;    i = i + 1) arch[i] = 32'hx;
         commits = 0; errors = 0; started = 0; rxd = 1'b1;
-        $readmemh("test.hex", base_mem);     // 代码 @0x80000000、数据 @0x80100000 同在 BaseRAM
+        $readmemh("test.hex", base_mem);     // 代码 @0x1c000000
 
         reset_btn = 1;
         repeat (8) @(posedge clk_50M);
@@ -141,9 +141,14 @@ module tb_soc;
         check(5'd18, 32'h18);
         check(5'd19, 32'h19);
         check(5'd21, 32'h21);
-        checkmem('h40000, 32'd55,        32'h80100000);
-        checkmem('h40001, 32'h000000ff, 32'h80100004);
-        checkmem('h40002, 32'h21,        32'h80100008);
+        check(5'd22, 32'h0);
+        check(5'd24, 32'h1);
+        check(5'd27, 32'd96);
+        check(5'd28, 32'hffff_fffb);
+        checkmem('h00000, 32'd55,        32'h1c400000);
+        checkmem('h00001, 32'h000000ff, 32'h1c400004);
+        checkmem('h00002, 32'h21,        32'h1c400008);
+        checkmem('h00003, 32'hffff_fffb, 32'h1c40000c);
 
         if (errors == 0) $display("==== SOC TEST PASSED ====");
         else             $display("==== SOC TEST FAILED: %0d errors ====", errors);

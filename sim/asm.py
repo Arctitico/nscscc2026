@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# 极简 LA32R 汇编器：仅支持 2026 个人赛 C3 的 21 条指令，两遍汇编解析标号。
-# 输出 test.hex（每行一个 32 位指令，hex），程序装载基址 0x80000000。
+# 2026 LA32R baseline 极简汇编器，两遍汇编解析标号。
+# 输出 test.hex（每行一个 32 位指令，hex），程序装载基址 0x1c000000。
 import sys
 
-BASE = 0x80000000
+BASE = 0x1C000000
 
 # 程序：助记符 + 操作数。寄存器用整数；标号用字符串。
 # 覆盖：算术/逻辑/移位/立即数/访存(字+字节)/分支/调用返回/前递/load-use。
@@ -13,7 +13,7 @@ PROG = [
     ("loop",    "add.w",  4, 4, 2),         # sum += i
     (None,      "addi.w", 2, 2, -1),        # i--
     (None,      "bne",    2, 0, "loop"),    # while i!=0  -> r4=55, r2=0
-    (None,      "lu12i.w",20, 0x80100),     # r20 = 0x80100000
+    (None,      "lu12i.w",20, 0x1C400),     # r20 = 0x1c400000 (ExtRAM)
     (None,      "st.w",   4, 20, 0),        # mem[base] = 55
     (None,      "ld.w",   3, 20, 0),        # r3 = 55
     (None,      "add.w",  5, 3, 3),         # r5 = 110  (load-use)
@@ -39,7 +39,16 @@ PROG = [
     ("func",    "addi.w", 19, 0, 0x19),     # r19 = 0x19
     (None,      "jirl",   0, 1, 0),         # 返回 (r1)
     ("after",   "addi.w", 21, 0, 0x21),     # r21 = 0x21
-    (None,      "st.w",   21, 20, 8),       # mem[base+8] = 0x21 (结束标志)
+    (None,      "addi.w", 22, 0, 0x10),     # CPUCFG index 0x10
+    (None,      "cpucfg", 22, 22),           # 无 Cache baseline -> 0
+    (None,      "addi.w", 23, 0, -1),        # r23 = -1
+    (None,      "slt",    24, 23, 0),        # signed(-1) < 0 -> 1
+    (None,      "addi.w", 25, 0, 3),
+    (None,      "addi.w", 26, 0, 5),
+    (None,      "sll.w",  27, 25, 26),       # 3 << 5 = 96
+    (None,      "mul.w",  28, 23, 26),       # -1 * 5 = -5
+    (None,      "st.w",   21, 20, 8),        # mem[base+8] = 0x21 (结束标志)
+    (None,      "st.w",   28, 20, 12),       # 新增运算结束标志
     ("halt",    "b",      "halt"),          # 自旋
 ]
 
@@ -61,7 +70,9 @@ def enc_i26(base, off):             # off 字偏移；inst[9:0]=off[25:16], inst
     o = off & 0x3FFFFFF
     return base | ((o & 0xFFFF) << 10) | ((o >> 16) & 0x3FF)
 
-BASE3R = {"add.w":0x00100000,"sub.w":0x00110000,"and":0x00148000,"or":0x00150000,"xor":0x00158000}
+BASE3R = {"add.w":0x00100000,"sub.w":0x00110000,"slt":0x00120000,
+          "and":0x00148000,"or":0x00150000,"xor":0x00158000,
+          "sll.w":0x00170000,"mul.w":0x001C0000}
 BASE12 = {"addi.w":0x02800000,"andi":0x03400000,"ori":0x03800000,
           "ld.b":0x28000000,"ld.w":0x28800000,"st.b":0x29000000,"st.w":0x29800000}
 BASE5  = {"slli.w":0x00408000,"srli.w":0x00448000}
@@ -91,6 +102,9 @@ for item in PROG:
         w = enc_1ri20(0x14000000, ops[0], ops[1])
     elif m == "pcaddu12i":
         w = enc_1ri20(0x1C000000, ops[0], ops[1])
+    elif m == "cpucfg":
+        # cpucfg rd, rj: bits[14:10] 固定为 0x1b
+        w = 0x00006C00 | ((ops[1]&31) << 5) | (ops[0]&31)
     elif m in ("beq","bne"):
         base = 0x58000000 if m=="beq" else 0x5C000000
         off = (labels[ops[2]] - pc) >> 2

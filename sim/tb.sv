@@ -1,12 +1,11 @@
 // ============================================================================
 // tb.sv —— mycpu_top 功能仿真平台（verilator --binary）
 // 行为级内存：类 SRAM 组合读（同周期），写在时钟沿按字节使能写。
-// 指令与数据共用一块内存（程序 0x80000000 起，数据 0x80100000 起）。
+// 行为级 BaseRAM/ExtRAM：程序从 0x1c000000 取指，数据放在 0x1c400000。
 // 自检：捕获每次提交的寄存器写，运行结束后比对期望值。
 // ============================================================================
 module tb;
-    localparam logic [31:0] BASE  = 32'h8000_0000;
-    localparam int          DEPTH = 'h42000;          // 覆盖到 0x80108000
+    localparam int DEPTH = 'h10000; // 本定向回归只需每片 RAM 的低 256 KiB
 
     reg clk, resetn;
 
@@ -38,17 +37,20 @@ module tb;
     );
 
     // ---- 行为级内存 ----
-    reg [31:0] mem [0:DEPTH-1];
+    reg [31:0] base_mem [0:DEPTH-1];
+    reg [31:0] ext_mem  [0:DEPTH-1];
 
-    function automatic int idx(input [31:0] addr);
-        idx = (addr - BASE) >> 2;
+    function automatic int idx(input [31:0] addr); idx = addr[21:2]; endfunction
+    function automatic bit is_base(input [31:0] addr);
+        is_base = (addr[31:22] == 10'h070) && (idx(addr) < DEPTH);
     endfunction
-    function automatic bit inrange(input [31:0] addr);
-        inrange = (addr >= BASE) && (idx(addr) < DEPTH);
+    function automatic bit is_ext(input [31:0] addr);
+        is_ext = (addr[31:22] == 10'h071) && (idx(addr) < DEPTH);
     endfunction
 
     // 数据口：组合读
-    assign data_sram_rdata = inrange(data_sram_addr) ? mem[idx(data_sram_addr)] : 32'h0;
+    assign data_sram_rdata = is_base(data_sram_addr) ? base_mem[idx(data_sram_addr)] :
+                             is_ext(data_sram_addr)  ? ext_mem[idx(data_sram_addr)]  : 32'h0;
 
     // 取指口：行为级突发读模型（接受当拍 rd_rdy，随后逐拍回 IWORDS 个字）
     localparam int IWORDS = 4;
@@ -59,7 +61,8 @@ module tb;
     wire [31:0] ibeat_addr    = ibase + (iw << 2);
     assign inst_rd_rdy    = iaccept;
     assign inst_ret_valid = iactive;
-    assign inst_ret_data  = inrange(ibeat_addr) ? mem[idx(ibeat_addr)] : 32'h0;
+    assign inst_ret_data  = is_base(ibeat_addr) ? base_mem[idx(ibeat_addr)] :
+                            is_ext(ibeat_addr)  ? ext_mem[idx(ibeat_addr)]  : 32'h0;
     assign inst_ret_last  = iactive & (iw == IWORDS-1);
     always @(posedge clk) begin
         if (!resetn)        begin iactive <= 1'b0; iw <= 3'd0; end
@@ -72,11 +75,17 @@ module tb;
 
     // 写（时钟沿，按字节使能）
     always @(posedge clk) begin
-        if (data_sram_en && (|data_sram_we) && inrange(data_sram_addr)) begin
-            if (data_sram_we[0]) mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
-            if (data_sram_we[1]) mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
-            if (data_sram_we[2]) mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
-            if (data_sram_we[3]) mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
+        if (data_sram_en && (|data_sram_we) && is_base(data_sram_addr)) begin
+            if (data_sram_we[0]) base_mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
+            if (data_sram_we[1]) base_mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
+            if (data_sram_we[2]) base_mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
+            if (data_sram_we[3]) base_mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
+        end
+        if (data_sram_en && (|data_sram_we) && is_ext(data_sram_addr)) begin
+            if (data_sram_we[0]) ext_mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
+            if (data_sram_we[1]) ext_mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
+            if (data_sram_we[2]) ext_mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
+            if (data_sram_we[3]) ext_mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
         end
     end
 
@@ -109,18 +118,18 @@ module tb;
             $display("  ok   r%0d = %08x", r, arch[r]);
     endtask
     task checkmem(input [31:0] addr, input [31:0] exp);
-        if (mem[idx(addr)] !== exp) begin
-            $display("  FAIL mem[%08x] = %08x, expected %08x", addr, mem[idx(addr)], exp);
+        if (ext_mem[idx(addr)] !== exp) begin
+            $display("  FAIL mem[%08x] = %08x, expected %08x", addr, ext_mem[idx(addr)], exp);
             errors = errors + 1;
         end else
-            $display("  ok   mem[%08x] = %08x", addr, mem[idx(addr)]);
+            $display("  ok   mem[%08x] = %08x", addr, ext_mem[idx(addr)]);
     endtask
 
     initial begin
-        for (i = 0; i < DEPTH; i = i + 1) mem[i] = 32'h0;
+        for (i = 0; i < DEPTH; i = i + 1) begin base_mem[i] = 32'h0; ext_mem[i] = 32'h0; end
         for (i = 0; i < 32;    i = i + 1) arch[i] = 32'hx;
         commits = 0; errors = 0;
-        $readmemh("test.hex", mem);
+        $readmemh("test.hex", base_mem);
 
         resetn = 0;
         repeat (4) @(posedge clk);
@@ -147,9 +156,14 @@ module tb;
         check(5'd18, 32'h18);
         check(5'd19, 32'h19);
         check(5'd21, 32'h21);
-        checkmem(32'h80100000, 32'd55);
-        checkmem(32'h80100004, 32'h000000ff);
-        checkmem(32'h80100008, 32'h21);
+        check(5'd22, 32'h0);
+        check(5'd24, 32'h1);
+        check(5'd27, 32'd96);
+        check(5'd28, 32'hffff_fffb);
+        checkmem(32'h1c400000, 32'd55);
+        checkmem(32'h1c400004, 32'h000000ff);
+        checkmem(32'h1c400008, 32'h21);
+        checkmem(32'h1c40000c, 32'hffff_fffb);
 
         if (errors == 0) $display("==== TEST PASSED ====");
         else             $display("==== TEST FAILED: %0d errors ====", errors);

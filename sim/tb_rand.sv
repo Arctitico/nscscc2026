@@ -8,9 +8,8 @@
 // golden.meta)。
 // ============================================================================
 module tb_rand;
-    localparam logic [31:0] BASE    = 32'h8000_0000;
-    localparam logic [31:0] SCRATCH = 32'h8010_0000;
-    localparam int          DEPTH   = 'h42000;        // 覆盖到 0x80108000
+    localparam logic [31:0] SCRATCH = 32'h1c40_0000;
+    localparam int          DEPTH   = 'h10000;
     localparam int          MAXT    = 200000;         // 提交流/内存数组上限
 
     reg clk, resetn;
@@ -41,10 +40,17 @@ module tb_rand;
     );
 
     // ---- 行为级内存 (组合读, 沿写) ----
-    reg [31:0] mem [0:DEPTH-1];
-    function automatic int  idx(input [31:0] a);     idx = (a - BASE) >> 2; endfunction
-    function automatic bit  inrange(input [31:0] a); inrange = (a >= BASE) && (idx(a) < DEPTH); endfunction
-    assign data_sram_rdata = inrange(data_sram_addr) ? mem[idx(data_sram_addr)] : 32'h0;
+    reg [31:0] base_mem [0:DEPTH-1];
+    reg [31:0] ext_mem  [0:DEPTH-1];
+    function automatic int idx(input [31:0] a); idx = a[21:2]; endfunction
+    function automatic bit is_base(input [31:0] a);
+        is_base = (a[31:22] == 10'h070) && (idx(a) < DEPTH);
+    endfunction
+    function automatic bit is_ext(input [31:0] a);
+        is_ext = (a[31:22] == 10'h071) && (idx(a) < DEPTH);
+    endfunction
+    assign data_sram_rdata = is_base(data_sram_addr) ? base_mem[idx(data_sram_addr)] :
+                             is_ext(data_sram_addr)  ? ext_mem[idx(data_sram_addr)]  : 32'h0;
     // 取指口：行为级突发读模型（接受当拍 rd_rdy，随后逐拍回 IWORDS 个字）
     localparam int IWORDS = 4;
     reg        iactive;
@@ -54,7 +60,8 @@ module tb_rand;
     wire [31:0] ibeat_addr = ibase + (iw << 2);
     assign inst_rd_rdy    = iaccept;
     assign inst_ret_valid = iactive;
-    assign inst_ret_data  = inrange(ibeat_addr) ? mem[idx(ibeat_addr)] : 32'h0;
+    assign inst_ret_data  = is_base(ibeat_addr) ? base_mem[idx(ibeat_addr)] :
+                            is_ext(ibeat_addr)  ? ext_mem[idx(ibeat_addr)]  : 32'h0;
     assign inst_ret_last  = iactive & (iw == IWORDS-1);
     always @(posedge clk) begin
         if (!resetn)      begin iactive <= 1'b0; iw <= 3'd0; end
@@ -65,11 +72,17 @@ module tb_rand;
         end
     end
     always @(posedge clk) begin
-        if (data_sram_en && (|data_sram_we) && inrange(data_sram_addr)) begin
-            if (data_sram_we[0]) mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
-            if (data_sram_we[1]) mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
-            if (data_sram_we[2]) mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
-            if (data_sram_we[3]) mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
+        if (data_sram_en && (|data_sram_we) && is_base(data_sram_addr)) begin
+            if (data_sram_we[0]) base_mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
+            if (data_sram_we[1]) base_mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
+            if (data_sram_we[2]) base_mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
+            if (data_sram_we[3]) base_mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
+        end
+        if (data_sram_en && (|data_sram_we) && is_ext(data_sram_addr)) begin
+            if (data_sram_we[0]) ext_mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
+            if (data_sram_we[1]) ext_mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
+            if (data_sram_we[2]) ext_mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
+            if (data_sram_we[3]) ext_mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
         end
     end
 
@@ -114,10 +127,10 @@ module tb_rand;
     reg [31:0] t_pc, t_wn, t_wd;
     integer guard;
     initial begin
-        for (i = 0; i < DEPTH; i = i + 1) mem[i] = 32'h0;
+        for (i = 0; i < DEPTH; i = i + 1) begin base_mem[i] = 32'h0; ext_mem[i] = 32'h0; end
         tptr = 0; errors = 0;
 
-        $readmemh("test.hex",       mem);
+        $readmemh("test.hex",       base_mem);
         $readmemh("golden_mem.hex", g_mem);
         // 读 meta: "ncommit nmem"
         fd = $fopen("golden.meta", "r");
@@ -156,9 +169,9 @@ module tb_rand;
         end
         // 比对 scratch 内存
         for (k = 0; k < nmem; k = k + 1) begin
-            if (mem[idx(SCRATCH) + k] !== g_mem[k]) begin
+            if (ext_mem[idx(SCRATCH) + k] !== g_mem[k]) begin
                 $display("  FAIL mem[%08x] = %08x, expected %08x",
-                         SCRATCH + k*4, mem[idx(SCRATCH)+k], g_mem[k]);
+                         SCRATCH + k*4, ext_mem[idx(SCRATCH)+k], g_mem[k]);
                 errors = errors + 1;
             end
         end

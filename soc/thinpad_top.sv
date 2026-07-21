@@ -10,8 +10,9 @@
 //     ↕ mem_bridge（地址译码 + 访存优先仲裁 + BaseRAM/ExtRAM 多周期控制器 + UART）
 //   物理 inout 数据线的三态在本层完成。其余外设（Flash/VGA/数码管/LED）置为非活动。
 //
-// 地址映射：0x80000000–0x803FFFFF→BaseRAM，0x80400000–0x807FFFFF→ExtRAM，
-//   串口 0xBFD003F8(数据)/0xBFD003FC(状态)。复位后从 0x80000000 取指。
+// 2026 地址映射：0x1c000000–0x1c3fffff→BaseRAM，
+//   0x1c400000–0x1c7fffff→ExtRAM，0x1f000000–0x1f0fffff→UART。
+// UART_DATA=0x1f000000，UART_STATUS=0x1f000005；复位 PC=0x1c000000。
 // ============================================================================
 module thinpad_top (
     input  wire        clk_50M,        // 50MHz 时钟输入

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================================
-# randgen.py —— LA32R(C3 21 条) 随机指令生成器 + 黄金模型(DiffTest 参考)
+# randgen.py —— LA32R 2026 baseline 随机指令生成器 + 黄金模型(DiffTest 参考)
 #
 # 思路(DiffTest / 协同仿真):
 #   1) 随机生成一段「直线」程序(算术/逻辑/移位/立即数/字与字节访存),不含分支,
@@ -11,9 +11,9 @@
 #      首个不一致即报 pc;运行结束再比对 scratch 内存。
 #
 # 输出文件(写到 --out-dir, 默认当前目录):
-#   test.hex          —— 指令字, $readmemh 装载到 0x80000000
+#   test.hex          —— 指令字, $readmemh 装载到 0x1c000000
 #   golden_trace.hex  —— 每行 "<pc> <wnum> <wdata>" (hex), 即期望提交流
-#   golden_mem.hex    —— scratch 区(0x80100000 起)最终镜像, 每行一字(hex)
+#   golden_mem.hex    —— scratch 区(0x1c400000 起)最终镜像, 每行一字(hex)
 #   golden.meta       —— "ncommit nmemword" 两个十进制数, 供 tb 读取计数
 #   并向 stderr 打印可读清单。
 #
@@ -21,13 +21,12 @@
 #   - dest 寄存器只用 1..30: r0 恒 0(写被忽略), r31 保留作 scratch 基址指针。
 #     这样每条写寄存器指令的 wnum 都 !=0, 与 CPU 的 debug_wb 脉冲一一对应。
 #   - 寄存器复位初值视为 0 (Verilator 2-state 默认 0 初始化, 与黄金模型一致)。
-#   - scratch 区固定 0x80100000 起, 字访存 4 对齐、字节访存任意, 偏移限制在窗口内,
-#     不与代码(0x80000000 起)重叠。
+#   - scratch 区固定从 ExtRAM 0x1c400000 开始，字访存 4 对齐、字节访存任意。
 # ============================================================================
 import sys, argparse, random
 
-BASE        = 0x80000000          # 代码装载基址 / 复位 PC
-SCRATCH     = 0x80100000          # 数据 scratch 基址 (放进 r31)
+BASE        = 0x1C000000          # 代码装载基址 / 复位 PC
+SCRATCH     = 0x1C400000          # ExtRAM scratch 基址 (放进 r31)
 SCRATCH_REG = 31                  # 保留作基址指针, 不作 dest
 
 # ---- 编码助手(与 asm.py 同一套底层编码) ----
@@ -43,7 +42,9 @@ def enc_i26(base, off):
     o = off & 0x3FFFFFF
     return base | ((o&0xFFFF)<<10) | ((o>>16)&0x3FF)
 
-OP_3R = {"add.w":0x00100000,"sub.w":0x00110000,"and":0x00148000,"or":0x00150000,"xor":0x00158000}
+OP_3R = {"add.w":0x00100000,"sub.w":0x00110000,"slt":0x00120000,
+         "and":0x00148000,"or":0x00150000,"xor":0x00158000,
+         "sll.w":0x00170000,"mul.w":0x001C0000}
 OP_12 = {"addi.w":0x02800000,"andi":0x03400000,"ori":0x03800000,
          "ld.b":0x28000000,"ld.w":0x28800000,"st.b":0x29000000,"st.w":0x29800000}
 OP_5  = {"slli.w":0x00408000,"srli.w":0x00448000}
@@ -75,13 +76,6 @@ class Golden:
         self.trace.append((pc, rd, u32(val)))
 
     def step(self, pc, inst):
-        # inst==0x00000000: RTL 中无任何 inst_* 命中 → alu_op 全 0, rf_we=~(st|b|...)=1,
-        # rf_waddr=inst[4:0]=0, 结果 0 → 提交 r0<=0 (架构上忽略 r0 写)。
-        # 这正是「SoC 首拍取指被 Verilator 双向总线解析问题打成 0」时的等效语义,
-        # randgen 在程序首字放一条 0x00000000 占位 NOP 来吸收该仿真伪迹(详见 gen())。
-        if inst == 0:
-            self.commit(pc, 0, 0)
-            return
         op6  = (inst>>26)&0x3F
         op22 = (inst>>22)&0xF
         op20 = (inst>>20)&0x3
@@ -94,12 +88,19 @@ class Golden:
         i20f = (inst>>5) & 0xFFFFF
         Rj, Rk, Rd = self.R[rj], self.R[rk], self.R[rd]
 
-        if op6 == 0x00 and op22 == 0x0 and op20 == 0x1:           # 3R 类
+        if (op6 == 0x00 and op22 == 0x0 and op20 == 0x0 and
+                op15 == 0x00 and rk == 0x1b):                      # cpucfg
+            # 无 Cache baseline：当前实现的所有配置字均为 0。
+            self.commit(pc, rd, 0)
+        elif op6 == 0x00 and op22 == 0x0 and op20 == 0x1:         # 3R 类
             if   op15 == 0x00: self.commit(pc, rd, Rj + Rk)        # add.w
             elif op15 == 0x02: self.commit(pc, rd, Rj - Rk)        # sub.w
+            elif op15 == 0x04: self.commit(pc, rd, int(sext(Rj, 32) < sext(Rk, 32))) # slt
             elif op15 == 0x09: self.commit(pc, rd, Rj & Rk)        # and
             elif op15 == 0x0a: self.commit(pc, rd, Rj | Rk)        # or
             elif op15 == 0x0b: self.commit(pc, rd, Rj ^ Rk)        # xor
+            elif op15 == 0x0e: self.commit(pc, rd, Rj << (Rk & 31)) # sll.w
+            elif op15 == 0x18: self.commit(pc, rd, Rj * Rk)        # mul.w low 32
             else: raise ValueError("bad 3R %08x" % inst)
         elif op6 == 0x00 and op22 == 0x1 and op20 == 0x0:         # 移位
             if   op15 == 0x01: self.commit(pc, rd, Rj << ui5)      # slli.w
@@ -151,8 +152,8 @@ class Golden:
 # ============================================================================
 # 随机程序生成
 # ============================================================================
-DP_OPS  = ["add.w","sub.w","and","or","xor","slli.w","srli.w",
-           "addi.w","andi","ori","lu12i.w","pcaddu12i"]
+DP_OPS  = ["add.w","sub.w","slt","and","or","xor","sll.w","mul.w",
+           "slli.w","srli.w","addi.w","andi","ori","lu12i.w","pcaddu12i","cpucfg"]
 MEM_OPS = ["ld.w","ld.b","st.w","st.b"]
 
 def gen(seed, n, window_words, mem_ratio):
@@ -172,11 +173,9 @@ def gen(seed, n, window_words, mem_ratio):
         recent.append(r)
         return r
 
-    # 首字占位 NOP (0x00000000): 复位 PC 处放一条 NOP, 吸收「SoC 级 Verilator 双向 SRAM
-    # 总线首拍取指解析非确定(可能读成 0)」的仿真伪迹 —— 不论该拍读到 0 还是正确的 0, 结果一致。
-    # 真正的序言(设 scratch 基址)放到第二拍, 由稳定的后续取指承接。core sim 下它就是普通 NOP。
-    words.append(0x00000000)
-    asm.append(("nop", ("(reset-pc placeholder)",)))
+    # 架构 NOP：andi r0,r0,0。
+    words.append(OP_12["andi"])
+    asm.append(("nop", ("andi r0,r0,0",)))
 
     # 序言: r31 = SCRATCH (lu12i.w r31, SCRATCH>>12)
     words.append(enc_1ri20(0x14000000, SCRATCH_REG, SCRATCH >> 12))
@@ -217,6 +216,9 @@ def gen(seed, n, window_words, mem_ratio):
             elif op == "pcaddu12i":
                 d, im = pick_dst(), rng.randint(0,0xFFFFF)
                 words.append(enc_1ri20(0x1C000000, d, im)); asm.append((op,(d,hex(im))))
+            elif op == "cpucfg":
+                d, a = pick_dst(), pick_src()
+                words.append(0x00006C00 | ((a&31)<<5) | (d&31)); asm.append((op,(d,a)))
 
     # 结尾自旋: b 0 (跳自身)
     halt_idx = len(words)

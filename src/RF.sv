@@ -86,6 +86,8 @@ assign RF_to_EX_BUS = '{
     alu_src1:      alu_src1,
     alu_src2:      alu_src2,
     rkd_value:     fwd_rkd,
+    is_mul:        db.is_mul,
+    is_cpucfg:     db.is_cpucfg,
     is_branch:     db.is_branch,
     inst_jirl:     db.inst_jirl,
     inst_beq:      db.inst_beq,

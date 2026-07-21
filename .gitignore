@@ -1,8 +1,10 @@
 
 obj_dir/
 
-/sim/test.hex
-/sim_soc/test.hex
+/sim/*.hex
+/sim/*.meta
+/sim_soc/*.hex
+/sim_soc/*.meta
 
 soc/README.md
 

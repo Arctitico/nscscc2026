@@ -15,7 +15,8 @@
 // alu_op 编码（12 位 one-hot），必须与 alu.sv 中的 OP_* 常量一致：
 //   bit0 add  bit1 sub  bit2 slt  bit3 sltu  bit4 and  bit5 nor
 //   bit6 or   bit7 xor  bit8 sll  bit9 srl   bit10 sra bit11 lui
-// C3 21 条指令只用到 add/sub/and/or/xor/sll/srl/lui，其余位保留。
+// 2026 baseline 使用 add/sub/slt/and/or/xor/sll/srl/lui；mul.w 与 cpucfg
+// 在 EX 中选择专用结果，不占用 alu_op 位。
 // pcaddu12i 复用 add（src1_is_pc=1），无需单独 alu_op。
 // ---------------------------------------------------------------------------
 
@@ -34,6 +35,8 @@ typedef struct packed {
     logic        src_reg_is_rd;// 第二个读端口取 rd（st / beq / bne），否则取 rk
     logic        need_rj;      // 真正读 rj（用于前递/停顿判定，避免误停）
     logic        need_rkd;     // 真正读第二寄存器（rk 或 rd）
+    logic        is_mul;       // mul.w，EX 选择乘法器低 32 位
+    logic        is_cpucfg;    // cpucfg，EX 按 rj 值读取配置字
     // 访存
     logic        is_ld;        // 加载
     logic        is_st;        // 存储
@@ -87,6 +90,8 @@ typedef struct packed {
     logic [31:0] alu_src1;     // src1_is_pc ? pc : 前递后的 rj
     logic [31:0] alu_src2;     // src2_is_imm ? imm : 前递后的 rk/rd
     logic [31:0] rkd_value;    // 前递后的第二寄存器值（store 数据 / 分支比较）
+    logic        is_mul;
+    logic        is_cpucfg;
     // 分支
     logic        is_branch;
     logic        inst_jirl;

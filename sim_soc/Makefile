@@ -2,12 +2,14 @@
 # 验证多周期访存停顿 / 地址译码 / 同片「访存优先」仲裁。用法：
 #   make        生成 test.hex（复用 ../sim/asm.py）、编译、运行自检
 #   make lint   仅 lint 板级顶层
+#   make supervisor  启动当前 2026 auto kernel 并核对 UART 欢迎字符串
+#   make level1      运行 52 字节/64 项 Fibonacci 第一阶段测试
 #   make clean
 SRC_DIR = ../src
 SOC_DIR = ../soc
 ASYNC   = ../../../nscscc2025/2025_nscscc_个人赛模版工程_la32r/thinpad_top.srcs/sources_1/new/async.v
 
-CPU_SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv \
+CPU_SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR)/mul.sv \
            $(SRC_DIR)/decoder.sv $(SRC_DIR)/regfile.sv $(SRC_DIR)/bpu.sv \
            $(SRC_DIR)/icache.sv \
            $(SRC_DIR)/IF.sv $(SRC_DIR)/ID.sv $(SRC_DIR)/RR.sv $(SRC_DIR)/DP.sv \
@@ -39,11 +41,31 @@ RFLAGS = --binary --timing --top-module tb_soc_rand -o Vtb_soc_rand \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
+SFLAGS = --binary --timing --top-module tb_supervisor -o Vtb_supervisor \
+         -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
+         -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
+         -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
+LFLAGS = --binary --timing --top-module tb_level1 -o Vtb_level1 \
+         -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
+         -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
+         -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
 
 rand:
 	python3 ../sim/randgen.py --seed $(SEED) --n $(N) 2>/dev/null
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
 	./obj_dir/Vtb_soc_rand
+
+# ---- 2026 supervisor 启动 + UART 回归 ----
+KERNEL_BIN ?= ../../bin/kernel_07161555.bin
+supervisor:
+	python3 bin2hex.py $(KERNEL_BIN) kernel.hex
+	verilator $(SFLAGS) $(SRCS) tb_supervisor.sv
+	./obj_dir/Vtb_supervisor
+
+level1:
+	python3 level1.py
+	verilator $(LFLAGS) $(SRCS) tb_level1.sv
+	./obj_dir/Vtb_level1
 
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
@@ -64,4 +86,4 @@ lint:
 	verilator --lint-only --top-module thinpad_top -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND $(SRCS)
 
 clean:
-	rm -rf obj_dir test.hex golden_trace.hex golden_mem.hex golden.meta
+	rm -rf obj_dir test.hex level1.hex kernel.hex golden_trace.hex golden_mem.hex golden.meta

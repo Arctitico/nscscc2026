@@ -2,14 +2,13 @@
 // tb_soc_rand.sv —— SoC 级随机指令 DiffTest (verilator --binary --timing)
 //
 // 在「真实多周期访存路径」(thinpad_top: mycpu_top + mem_bridge + 异步 SRAM 模型)上
-// 跑随机程序, 锁步比对黄金提交流。代码与 scratch 同在 BaseRAM, 压同片「访存优先」仲裁。
+// 跑随机程序并锁步比对黄金提交流。代码在 BaseRAM，scratch 在 ExtRAM。
 // 激励由 ../sim/randgen.py 生成 (test.hex / golden_trace.hex / golden_mem.hex / golden.meta)。
 // ============================================================================
 module tb_soc_rand;
-    localparam logic [31:0] BASE    = 32'h8000_0000;
-    localparam logic [31:0] SCRATCH = 32'h8010_0000;
-    localparam int          DEPTH   = 'h42000;        // 覆盖到 0x80108000
-    localparam int          SCR_W   = 'h40000;        // scratch 字基址 (0x100000>>2)
+    localparam logic [31:0] SCRATCH = 32'h1c40_0000;
+    localparam int          DEPTH   = 'h10000;
+    localparam int          SCR_W   = 'h00000;
     localparam int          MAXT    = 200000;
 
     reg  clk_50M, reset_btn, rxd;
@@ -52,13 +51,13 @@ module tb_soc_rand;
     assign base_ram_data = (~base_ram_ce_n & ~base_ram_oe_n & base_ram_we_n) ? base_mem[base_ram_addr] : 32'bz;
     assign ext_ram_data  = (~ext_ram_ce_n  & ~ext_ram_oe_n  & ext_ram_we_n ) ? ext_mem[ext_ram_addr]  : 32'bz;
     always @(posedge clk_50M) begin
-        if (~base_ram_ce_n & ~base_ram_we_n) begin
+        if (~reset_btn & ~base_ram_ce_n & ~base_ram_we_n) begin
             if (~base_ram_be_n[0]) base_mem[base_ram_addr][ 7: 0] <= u_dut.base_ram_wdat[ 7: 0];
             if (~base_ram_be_n[1]) base_mem[base_ram_addr][15: 8] <= u_dut.base_ram_wdat[15: 8];
             if (~base_ram_be_n[2]) base_mem[base_ram_addr][23:16] <= u_dut.base_ram_wdat[23:16];
             if (~base_ram_be_n[3]) base_mem[base_ram_addr][31:24] <= u_dut.base_ram_wdat[31:24];
         end
-        if (~ext_ram_ce_n & ~ext_ram_we_n) begin
+        if (~reset_btn & ~ext_ram_ce_n & ~ext_ram_we_n) begin
             if (~ext_ram_be_n[0]) ext_mem[ext_ram_addr][ 7: 0] <= u_dut.ext_ram_wdat[ 7: 0];
             if (~ext_ram_be_n[1]) ext_mem[ext_ram_addr][15: 8] <= u_dut.ext_ram_wdat[15: 8];
             if (~ext_ram_be_n[2]) ext_mem[ext_ram_addr][23:16] <= u_dut.ext_ram_wdat[23:16];
@@ -109,7 +108,7 @@ module tb_soc_rand;
         for (i = 0; i < DEPTH; i = i + 1) begin base_mem[i] = 32'h0; ext_mem[i] = 32'h0; end
         tptr = 0; errors = 0; started = 0; rxd = 1'b1;
 
-        $readmemh("test.hex",       base_mem);   // 代码 @0x80000000、scratch @0x80100000 同在 BaseRAM
+        $readmemh("test.hex",       base_mem);   // 代码 @0x1c000000，scratch @ExtRAM 0
         $readmemh("golden_mem.hex", g_mem);
         fd = $fopen("golden.meta", "r");
         code = $fscanf(fd, "%d %d", ncommit, nmem);
@@ -141,9 +140,9 @@ module tb_soc_rand;
             errors = errors + 1;
         end
         for (k = 0; k < nmem; k = k + 1) begin
-            if (base_mem[SCR_W + k] !== g_mem[k]) begin
+            if (ext_mem[SCR_W + k] !== g_mem[k]) begin
                 $display("  FAIL mem[%08x] = %08x, expected %08x",
-                         SCRATCH + k*4, base_mem[SCR_W + k], g_mem[k]);
+                         SCRATCH + k*4, ext_mem[SCR_W + k], g_mem[k]);
                 errors = errors + 1;
             end
         end

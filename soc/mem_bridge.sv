@@ -1,8 +1,10 @@
 // ============================================================================
 // mem_bridge —— CPU（取指突发读口 + 访存单字口）→ 板上 BaseRAM/ExtRAM/UART 桥
 //
-// 地址译码（按 addr[23:22]，与往届参考一致）：00=BaseRAM 01=ExtRAM 11=UART。
-//   片内字地址 = addr[21:2]（每片 1M 字 = 4MB）。
+// 2026 物理地址译码：
+//   0x1c000000-0x1c3fffff = BaseRAM，0x1c400000-0x1c7fffff = ExtRAM；
+//   0x1f000000-0x1f0fffff = UART 窗口。RAM 片内字地址 = addr[21:2]。
+// 必须检查完整高位，不能仅看 addr[23:22] 而产生旧地址镜像。
 //
 // 取指口：**突发读通道**（icache 整行重填用）
 //   inst_rd_req/inst_rd_addr(行基址) → inst_rd_rdy(被接受) / inst_ret_valid+
@@ -64,11 +66,11 @@ module mem_bridge #(
 localparam [2:0] INST_LEN = LINE_WORDS[2:0] - 3'd1;
 
 // ---------------- 地址译码 ----------------
-wire inst_base = inst_rd_req  & (inst_rd_addr[23:22]  == 2'b00);
-wire inst_ext  = inst_rd_req  & (inst_rd_addr[23:22]  == 2'b01);
-wire data_base = data_sram_en & (data_sram_addr[23:22] == 2'b00);
-wire data_ext  = data_sram_en & (data_sram_addr[23:22] == 2'b01);
-wire data_uart = data_sram_en & (data_sram_addr[23:22] == 2'b11);
+wire inst_base = inst_rd_req  & (inst_rd_addr[31:22]  == 10'h070);
+wire inst_ext  = inst_rd_req  & (inst_rd_addr[31:22]  == 10'h071);
+wire data_base = data_sram_en & (data_sram_addr[31:22] == 10'h070);
+wire data_ext  = data_sram_en & (data_sram_addr[31:22] == 10'h071);
+wire data_uart = data_sram_en & (data_sram_addr[31:20] == 12'h1f0);
 
 // ================= BaseRAM 仲裁（访存优先；突发原子）=================
 wire        base_busy;
@@ -132,7 +134,7 @@ wire [31:0] uart_rdata;
 uart_mm u_uart (
     .clk    (clk           ), .reset(reset),
     .txd    (txd           ), .rxd(rxd),
-    .req    (data_uart     ), .wstrb(data_sram_we), .reg_sel(data_sram_addr[2]),
+    .req    (data_uart     ), .wstrb(data_sram_we), .addr_offset(data_sram_addr[2:0]),
     .wdata  (data_sram_wdata), .tag_in(1'b1),
     .ok     (uart_ok       ), .rdata(uart_rdata), .tag_out()
 );

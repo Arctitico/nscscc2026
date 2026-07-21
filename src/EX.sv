@@ -60,6 +60,29 @@ alu u_alu(
     .alu_result (alu_result )
 );
 
+wire [31:0] mul_low;
+wire [31:0] mul_high_unused;
+mul u_mul (
+    .a_in      (eb.alu_src1),
+    .b_in      (eb.alu_src2),
+    .is_signed (1'b1       ),
+    .c_low     (mul_low    ),
+    .c_high    (mul_high_unused)
+);
+
+// 无 Cache baseline 只需要让默认 supervisor 识别“没有 I/D Cache”。
+// 当前软件只读取 0x10；其它未实现配置字按架构约定返回 0。
+logic [31:0] cpucfg_result;
+always_comb begin
+    unique case (eb.alu_src1)
+        32'h0000_0010: cpucfg_result = 32'h0000_0000;
+        default:       cpucfg_result = 32'h0000_0000;
+    endcase
+end
+
+wire [31:0] execute_result = eb.is_cpucfg ? cpucfg_result :
+                             eb.is_mul    ? mul_low       : alu_result;
+
 wire        eq         = (eb.alu_src1 == eb.rkd_value);
 wire        uncond     = eb.is_branch & ~eb.inst_beq & ~eb.inst_bne;
 wire        cond_taken = (eb.inst_beq & eq) | (eb.inst_bne & ~eq);
@@ -91,7 +114,7 @@ assign data_sram_wdata = st_wdata;
 
 assign EX_to_WB_BUS = '{
     pc:            eb.pc,
-    alu_result:    alu_result,
+    alu_result:    execute_result,
     mem_rdata:     data_sram_rdata,
     addr_lo:       alu_result[1:0],
     ld_width:      eb.ld_width,
@@ -101,7 +124,7 @@ assign EX_to_WB_BUS = '{
     rf_waddr:      eb.rf_waddr
 };
 
-wire [31:0] ex_fwd_data = (eb.rf_wdata_sel == 2'b10) ? (eb.pc + 32'd4) : alu_result;
+wire [31:0] ex_fwd_data = (eb.rf_wdata_sel == 2'b10) ? (eb.pc + 32'd4) : execute_result;
 assign ex_fwd = '{
     valid:    ex_valid,
     rf_we:    eb.rf_we,
