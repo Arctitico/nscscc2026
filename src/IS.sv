@@ -1,9 +1,10 @@
 // ============================================================================
 // IS —— 顺序双发射的 co-issue 决策点。
 //
-// 两槽同拍发射需要同时满足：slot0 不是分支、最多一条访存、最多一条
-// mul.w，且 slot1 不读 slot0 的目的寄存器。不满足时先发 slot0，再把
-// slot1 重贴为单槽发射。暂不与下一 bundle 做 compaction。
+// 两槽同拍发射需要同时满足：最多一条访存、最多一条分支、slot1 不读
+// slot0 的目的寄存器；若 slot0 是分支，slot1 不得访存；若含一个 mul.w，
+// 另一槽必须是独立纯 ALU。不满足时先发 slot0，再把 slot1 重贴为单槽发射。
+// 暂不与下一 bundle 做 compaction。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -18,7 +19,14 @@ module IS (
     output wire             IS_to_RF_valid,
 
     input  dp_to_is_bus_t   DP_to_IS_BUS,
-    output is_to_rf_bus_t   IS_to_RF_BUS
+    output is_to_rf_bus_t   IS_to_RF_BUS,
+
+    output wire             perf_coissue,
+    output wire             perf_split_total,
+    output wire             perf_split_raw,
+    output wire             perf_split_mem,
+    output wire             perf_split_mul,
+    output wire             perf_split_branch
 );
 
 reg            is_valid;
@@ -39,17 +47,36 @@ wire        intra_raw = s0_writes &
                         ((db1.need_rj  & (db0.rf_waddr == db1.rj)) |
                          (db1.need_rkd & (db0.rf_waddr == s1_rkd)));
 wire both_mem = (db0.is_ld | db0.is_st) & (db1.is_ld | db1.is_st);
-// mul.w 会在 EX 停留多拍；当前不让它与另一槽绑定，避免访存回包或
-// 分支重定向在乘法等待期间重复发生。
+wire both_branch = db0.is_branch & db1.is_branch;
+wire branch_mem = db0.is_branch & (db1.is_ld | db1.is_st);
+wire branch_pair_ok = ~both_branch & ~branch_mem;
 wire any_mul = db0.is_mul | db1.is_mul;
+wire one_mul = db0.is_mul ^ db1.is_mul;
+wire pure_alu0 = ~db0.is_mul & ~db0.is_cpucfg & ~db0.is_branch &
+                 ~db0.is_ld & ~db0.is_st;
+wire pure_alu1 = ~db1.is_mul & ~db1.is_cpucfg & ~db1.is_branch &
+                 ~db1.is_ld & ~db1.is_st;
+wire mul_pair_ok = ~any_mul |
+                   (one_mul & ((db0.is_mul & pure_alu1) |
+                               (db1.is_mul & pure_alu0)));
+wire mul_block = any_mul & ~mul_pair_ok;
 
-wire can_coissue = idp.v1 & ~db0.is_branch & ~both_mem & ~any_mul & ~intra_raw;
+wire can_coissue = idp.v1 & ~both_mem & branch_pair_ok & mul_pair_ok & ~intra_raw;
 wire issuing_split = is_valid & ~slot1_pending & idp.v1 & ~can_coissue;
 wire group_last    = slot1_pending | ~issuing_split;
 
 assign IS_to_RF_valid = is_valid;
 assign IS_allow_in    = ~is_valid | (group_last & RF_allow_in);
 wire   is_fire        = IS_to_RF_valid & RF_allow_in;
+
+// 这些脉冲只描述一次真正完成的 IS 发射。多个 split 原因可以同时为 1，
+// 便于区分“本次为何不能配对”；perf_split_total 则始终每个拆分 bundle 只计 1。
+assign perf_coissue     = is_fire & ~slot1_pending & idp.v1 & can_coissue;
+assign perf_split_total = is_fire & issuing_split;
+assign perf_split_raw   = is_fire & issuing_split & intra_raw;
+assign perf_split_mem   = is_fire & issuing_split & both_mem;
+assign perf_split_mul   = is_fire & issuing_split & mul_block;
+assign perf_split_branch = is_fire & issuing_split & ~branch_pair_ok;
 
 always @(posedge clk) begin
     if (reset)            is_valid <= 1'b0;

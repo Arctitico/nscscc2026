@@ -175,10 +175,17 @@ module tb;
         check(5'd24, 32'h1);
         check(5'd27, 32'd96);
         check(5'd28, 32'hffff_fffb);
+        check(5'd29, 32'd15);
+        check(5'd30, 32'd30);
+        check(5'd31, 32'd0);
         checkmem(32'h1c400000, 32'd55);
         checkmem(32'h1c400004, 32'h000000ff);
         checkmem(32'h1c400008, 32'h21);
         checkmem(32'h1c40000c, 32'hffff_fffb);
+        checkmem(32'h1c400010, 32'h0);
+        checkmem(32'h1c400014, 32'h21);
+        checkmem(32'h1c400018, 32'd15);
+        checkmem(32'h1c40001c, 32'd30);
 
         if (errors == 0) $display("==== TEST PASSED ====");
         else             $display("==== TEST FAILED: %0d errors ====", errors);

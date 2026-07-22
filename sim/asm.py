@@ -49,6 +49,19 @@ PROG = [
     (None,      "mul.w",  28, 23, 26),       # -1 * 5 = -5
     (None,      "st.w",   21, 20, 8),        # mem[base+8] = 0x21 (结束标志)
     (None,      "st.w",   28, 20, 12),       # 新增运算结束标志
+    (None,      "addi.w", 31, 0, 0),         # 对齐下一条分支到 8B bundle 的 slot0
+    # 以下分支刻意放在 8B bundle 的 slot0。冷启动预测不跳，实际跳转时
+    # slot1 纯 ALU 已共发但必须被 EX 抹掉，不能写回 r31。
+    (None,      "beq",    0, 0, "branch_taken"),
+    (None,      "addi.w", 31, 0, 31),        # 错误路径，r31 必须保持 0
+    # 分支与访存仍保守拆发；正确不跳后 slot1 store 应正常完成。
+    ("branch_taken", "bne", 0, 0, "after_not_taken"),
+    (None,      "st.w",   21, 20, 20),       # mem[base+20] = 0x21
+    # 唯一一个 mul.w 与独立纯 ALU 同 bundle 共发。
+    ("after_not_taken", "mul.w", 29, 25, 26), # 3 * 5 = 15
+    (None,      "addi.w", 30, 0, 30),        # r30 = 30
+    (None,      "st.w",   29, 20, 24),
+    (None,      "st.w",   30, 20, 28),
     ("halt",    "b",      "halt"),          # 自旋
 ]
 

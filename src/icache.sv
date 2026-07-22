@@ -24,7 +24,9 @@ module icache #(
     input  wire        inst_rd_rdy,     // 突发被接受
     input  wire        inst_ret_valid,  
     input  wire [31:0] inst_ret_data,
-    input  wire        inst_ret_last
+    input  wire        inst_ret_last,
+
+    output wire        perf_miss
 );
 
 localparam integer NSETS    = (1 << IDX_BITS);
@@ -68,6 +70,7 @@ reg                 v0_q, v1_q;
 wire hit0 = v0_q & (tag0_q == req_tag);
 wire hit1 = v1_q & (tag1_q == req_tag);
 wire hit  = in_lookup & (hit0 | hit1);
+assign perf_miss = in_lookup & ~hit & ~flush;
 
 // 接受一次新请求
 wire accept = req & ~flush & ( (state==S_IDLE) | (in_lookup & hit) );

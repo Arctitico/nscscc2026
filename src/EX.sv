@@ -1,6 +1,7 @@
 // ============================================================================
 // Execute：双 ALU，单数据口，单三级乘法器。
-// IS 保证同一 bundle 最多一条访存、最多一条分支，mul.w 单独发射。
+// IS 保证同一 bundle 最多一条访存、最多一条分支；
+// 一个 mul.w 只可与独立纯 ALU 共发，bundle 仍整体等待乘法结果后写回。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -34,7 +35,11 @@ module EX (
     output wire   [31:0]    data_sram_addr,
     output wire   [31:0]    data_sram_wdata,
     input  wire   [31:0]    data_sram_rdata,
-    input  wire             data_ok
+    input  wire             data_ok,
+
+    output wire             perf_data_wait,
+    output wire             perf_mul_wait,
+    output wire             perf_branch_mispred
 );
 
 reg            ex_valid;
@@ -77,7 +82,7 @@ wire mispred1 = ex_v1 & s1.is_branch &
                 ((s1.bp_taken ^ br_taken1) |
                  (br_taken1 & s1.bp_taken & (br_target1 != s1.bp_target)));
 
-// 理论上 slot0 分支不会 co-issue；仍在这里硬件抹掉更年轻的 slot1。
+// slot0 分支可与非分支 slot1 共发；误预测时必须抹掉更年轻的 slot1。
 wire ex_v1_eff = ex_v1 & ~mispred0;
 
 assign redirect        = mispred0 | mispred1;
@@ -85,11 +90,10 @@ assign redirect_target = mispred0 ? (br_taken0 ? br_target0 : (s0.pc + 32'd4))
                                    : (br_taken1 ? br_target1 : (s1.pc + 32'd4));
 
 // ---------------- 单数据口 ----------------
-wire is_mem0 = ex_v0     & (s0.is_ld | s0.is_st);
-// IS 保证 slot0 分支不会与 slot1 共发，因此 slot1 访存不可能处在 mispred0 的
-// 年轻错误路径上。访存仲裁直接使用 ex_v1，避免把分支目标/误预测组合链串到
-// data_sram_addr 和 I-cache snoop 失效路径；写回 bundle 仍用 ex_v1_eff 防御抹除。
-wire is_mem1 = ex_v1     & (s1.is_ld | s1.is_st);
+wire is_mem0 = ex_v0 & (s0.is_ld | s0.is_st);
+// IS 禁止 slot0 分支与 slot1 访存共发，因此 slot1 访存不会成为 slot0
+// 误预测产生的错误路径。直接使用寄存后的 ex_v1，避免分支比较直通数据口。
+wire is_mem1 = ex_v1 & (s1.is_ld | s1.is_st);
 wire mem_sel1 = is_mem1;
 
 wire [31:0] mem_addr = mem_sel1 ? alu_result1 : alu_result0;
@@ -127,6 +131,10 @@ wire ex_slot_allow = ~ex_valid | (ex_ready_go & WB_allow_in);
 assign EX_allow_in = ex_slot_allow &
                      (~RF_to_EX_valid | ~incoming_mul | mul_in_ready);
 assign EX_to_WB_valid = ex_valid & ex_ready_go;
+
+assign perf_data_wait      = ex_valid & (is_mem0 | is_mem1) & ~data_ok;
+assign perf_mul_wait       = ex_valid & ex_has_mul & ~mul_out_valid;
+assign perf_branch_mispred = redirect & ex_ready_go & WB_allow_in;
 
 assign mul_in_valid  = RF_to_EX_valid & EX_allow_in & incoming_mul;
 assign mul_out_ready = ex_valid & ex_has_mul & WB_allow_in;
