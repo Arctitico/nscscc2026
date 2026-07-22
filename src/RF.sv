@@ -65,6 +65,19 @@ function automatic [31:0] forward(
     else                                                                               forward = raw;
 endfunction
 
+function automatic [31:0] forward_no_ex(
+    input [ 4:0] addr,
+    input [31:0] raw,
+    input fwd_bus_t w1, input fwd_bus_t w0,
+    input fwd_bus_t c1, input fwd_bus_t c0
+);
+    if      (w1.valid & w1.rf_we & ~w1.is_ld & (w1.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = w1.rf_wdata;
+    else if (w0.valid & w0.rf_we & ~w0.is_ld & (w0.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = w0.rf_wdata;
+    else if (c1.valid & c1.rf_we &             (c1.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = c1.rf_wdata;
+    else if (c0.valid & c0.rf_we &             (c0.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = c0.rf_wdata;
+    else                                                                               forward_no_ex = raw;
+endfunction
+
 wire [31:0] fwd_rj0  = forward(rf_raddr1, rf_rdata1, ex_fwd1, ex_fwd0,
                                wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
 wire [31:0] fwd_rkd0 = forward(rf_raddr2, rf_rdata2, ex_fwd1, ex_fwd0,
@@ -73,10 +86,29 @@ wire [31:0] fwd_rj1  = forward(rf_raddr3, rf_rdata3, ex_fwd1, ex_fwd0,
                                wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
 wire [31:0] fwd_rkd1 = forward(rf_raddr4, rf_rdata4, ex_fwd1, ex_fwd0,
                                wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+wire [31:0] mul_rj0   = forward_no_ex(rf_raddr1, rf_rdata1,
+                                     wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+wire [31:0] mul_rkd0  = forward_no_ex(rf_raddr2, rf_rdata2,
+                                     wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+wire [31:0] mul_rj1   = forward_no_ex(rf_raddr3, rf_rdata3,
+                                     wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+wire [31:0] mul_rkd1  = forward_no_ex(rf_raddr4, rf_rdata4,
+                                     wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
 
 function automatic exload_hit(input fwd_bus_t ld, input need, input [4:0] addr);
     exload_hit = ld.valid & ld.rf_we & ld.is_ld & (ld.rf_waddr != 5'b0) &
                  need & (ld.rf_waddr == addr);
+endfunction
+
+// 乘法器输入寄存器原本由“EX ALU -> RF 六路旁路 -> DSP 输入”在同一拍
+// 直达，这是 100 MHz 下当前最差的真实数据路径。仅对紧邻的
+// ALU-to-MUL RAW 依赖互锁一拍，改从 WB 旁路取数；普通 ALU 依赖仍保持
+// 零气泡。load/branch-paired-slot1 已由 is_ld 语义覆盖，无需重复判断。
+function automatic exwrite_hit(input fwd_bus_t producer,
+                               input need, input [4:0] addr);
+    exwrite_hit = producer.valid & producer.rf_we & ~producer.is_ld &
+                  (producer.rf_waddr != 5'b0) & need &
+                  (producer.rf_waddr == addr);
 endfunction
 
 wire lu0 = exload_hit(ex_fwd0, db0.need_rj,  rf_raddr1) |
@@ -97,7 +129,18 @@ wire lu1 = exload_hit(ex_fwd0, db1.need_rj,  rf_raddr3) |
            exload_hit(wb_fwd1, db1.need_rkd, rf_raddr4);
 
 wire load_use   = lu0 | (idp.v1 & lu1);
-wire rf_ready_go = ~load_use;
+wire mul_dep0 = db0.is_mul &
+                (exwrite_hit(ex_fwd0, db0.need_rj,  rf_raddr1) |
+                 exwrite_hit(ex_fwd1, db0.need_rj,  rf_raddr1) |
+                 exwrite_hit(ex_fwd0, db0.need_rkd, rf_raddr2) |
+                 exwrite_hit(ex_fwd1, db0.need_rkd, rf_raddr2));
+wire mul_dep1 = idp.v1 & db1.is_mul &
+                (exwrite_hit(ex_fwd0, db1.need_rj,  rf_raddr3) |
+                 exwrite_hit(ex_fwd1, db1.need_rj,  rf_raddr3) |
+                 exwrite_hit(ex_fwd0, db1.need_rkd, rf_raddr4) |
+                 exwrite_hit(ex_fwd1, db1.need_rkd, rf_raddr4));
+wire mul_ex_dep = mul_dep0 | mul_dep1;
+wire rf_ready_go = ~(load_use | mul_ex_dep);
 assign RF_allow_in    = ~rf_valid | (rf_ready_go & EX_allow_in);
 assign RF_to_EX_valid = rf_valid & rf_ready_go & ~flush;
 
@@ -116,6 +159,7 @@ assign RF_to_EX_BUS = '{
         pc: idp.s0.pc, inst: idp.s0.inst, imm: db0.imm, alu_op: db0.alu_op,
         alu_src1: db0.src1_is_pc ? idp.s0.pc : fwd_rj0,
         alu_src2: db0.src2_is_imm ? db0.imm : fwd_rkd0,
+        mul_src1: mul_rj0, mul_src2: mul_rkd0,
         rkd_value: fwd_rkd0,
         is_mul: db0.is_mul, is_cpucfg: db0.is_cpucfg,
         is_branch: db0.is_branch, inst_jirl: db0.inst_jirl,
@@ -129,6 +173,7 @@ assign RF_to_EX_BUS = '{
         pc: idp.s1.pc, inst: idp.s1.inst, imm: db1.imm, alu_op: db1.alu_op,
         alu_src1: db1.src1_is_pc ? idp.s1.pc : fwd_rj1,
         alu_src2: db1.src2_is_imm ? db1.imm : fwd_rkd1,
+        mul_src1: mul_rj1, mul_src2: mul_rkd1,
         rkd_value: fwd_rkd1,
         is_mul: db1.is_mul, is_cpucfg: db1.is_cpucfg,
         is_branch: db1.is_branch, inst_jirl: db1.inst_jirl,

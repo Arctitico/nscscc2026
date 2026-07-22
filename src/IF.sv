@@ -13,7 +13,6 @@ module IF (
     output if_to_id_bus_t   IF_to_ID_BUS,
 
     output wire   [31:0]    bp_pc0,
-    output wire   [31:0]    bp_pc1,
     input  wire             bp_taken0,
     input  wire   [31:0]    bp_target0,
     input  wire             bp_taken1,
@@ -39,7 +38,6 @@ reg [31:0] pc_f1;
 reg        valid_f1;
 
 assign bp_pc0  = pc_f1;
-assign bp_pc1  = pc_f1 + 32'd4;
 assign ic_addr = pc_f1;
 
 wire        odd_start = pc_f1[2];

@@ -1,8 +1,12 @@
 // ============================================================================
 // DP —— 分发（Dispatch）
 //
-// 【baseline 直通级】把输入锁存 dp_bus_r 原样裹进 DP_to_IS_BUS。实现乱序双发射时
-// 在此把指令分发到发射队列 / 保留站并扩展 dp_to_is_bus_t —— 不要删掉本级。
+// 当前实现为两项非穿透 dispatch FIFO。输入 ready 只由已寄存的占用数决定，
+// 不再把 IS/RF/EX/WB 的背压组合传播回 RR/ID；这既切断全流水 allow-in
+// 关键路径，也为后续 rename -> dispatch -> issue queue 保留明确的解耦边界。
+//
+// FIFO 满且同拍出队时保守地不接收新项。下游从长停顿恢复的第一拍会产生一个
+// 空位，之后仍可保持每拍一组的吞吐；这个恢复气泡换取 ready 路径完全非穿透。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -20,23 +24,37 @@ module DP (
     output dp_to_is_bus_t   DP_to_IS_BUS
 );
 
-reg            dp_valid;
-rr_to_dp_bus_t dp_bus_r;        // 输入锁存
+rr_to_dp_bus_t fifo [0:1];
+reg            rd_ptr;
+reg            wr_ptr;
+reg [1:0]      count;
 
-wire dp_ready_go = 1'b1;
-assign DP_allow_in    = ~dp_valid | (dp_ready_go & IS_allow_in);
-assign DP_to_IS_valid =  dp_valid &  dp_ready_go;
+assign DP_allow_in    = (count != 2'd2);
+assign DP_to_IS_valid = (count != 2'd0);
+
+wire push = RR_to_DP_valid & DP_allow_in;
+wire pop  = DP_to_IS_valid & IS_allow_in;
 
 always @(posedge clk) begin
-    if (reset)            dp_valid <= 1'b0;
-    else if (flush)       dp_valid <= 1'b0;
-    else if (DP_allow_in) dp_valid <= RR_to_DP_valid;
+    if (reset | flush) begin
+        rd_ptr <= 1'b0;
+        wr_ptr <= 1'b0;
+        count  <= 2'd0;
+    end else begin
+        case ({push, pop})
+        2'b10: count <= count + 2'd1;
+        2'b01: count <= count - 2'd1;
+        default: count <= count;
+        endcase
+        if (push) wr_ptr <= ~wr_ptr;
+        if (pop)  rd_ptr <= ~rd_ptr;
+    end
 end
 
 always @(posedge clk) begin
-    if (RR_to_DP_valid & DP_allow_in) dp_bus_r <= RR_to_DP_BUS;
+    if (push) fifo[wr_ptr] <= RR_to_DP_BUS;
 end
 
-assign DP_to_IS_BUS = '{rr_to_dp_bus: dp_bus_r};
+assign DP_to_IS_BUS = '{rr_to_dp_bus: fifo[rd_ptr]};
 
 endmodule

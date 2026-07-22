@@ -1,9 +1,10 @@
 // ============================================================================
 // IS —— 顺序双发射的 co-issue 决策点。
 //
-// 两槽同拍发射需要同时满足：最多一条访存、最多一条分支、slot1 不读
-// slot0 的目的寄存器；若 slot0 是分支，slot1 不得访存；若含一个 mul.w，
-// 另一槽必须是独立纯 ALU。不满足时先发 slot0，再把 slot1 重贴为单槽发射。
+// 两槽同拍发射需要同时满足：最多一条访存、分支只能位于 slot0 且 slot1
+// 不是访存、slot1 不读 slot0 的目的寄存器；若含一个 mul.w，另一槽必须是
+// 独立纯 ALU。不满足时先发 slot0，再把 slot1 重贴为单槽发射。这样 EX 只
+// 保留一套分支解析，并避免 mispredict 组合结果进入 forwarding/allow-in。
 // 暂不与下一 bundle 做 compaction。
 // ============================================================================
 import cpu_pkg::*;
@@ -47,9 +48,11 @@ wire        intra_raw = s0_writes &
                         ((db1.need_rj  & (db0.rf_waddr == db1.rj)) |
                          (db1.need_rkd & (db0.rf_waddr == s1_rkd)));
 wire both_mem = (db0.is_ld | db0.is_st) & (db1.is_ld | db1.is_st);
-wire both_branch = db0.is_branch & db1.is_branch;
-wire branch_mem = db0.is_branch & (db1.is_ld | db1.is_st);
-wire branch_pair_ok = ~both_branch & ~branch_mem;
+wire slot1_mem = db1.is_ld | db1.is_st;
+// 分支只允许出现在执行槽 0。slot0 分支可以携带一个无访存的年轻
+// slot1；若误预测，EX 在提交边界精确杀掉 slot1。这样恢复常见的
+// branch+ALU 双发射，同时不再需要 slot1 分支解析器。
+wire branch_pair_ok = ~db1.is_branch & ~(db0.is_branch & slot1_mem);
 wire any_mul = db0.is_mul | db1.is_mul;
 wire one_mul = db0.is_mul ^ db1.is_mul;
 wire pure_alu0 = ~db0.is_mul & ~db0.is_cpucfg & ~db0.is_branch &

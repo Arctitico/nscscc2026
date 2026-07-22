@@ -15,7 +15,6 @@ module bpu #(
     input  wire [31:0] pred_pc0,
     output wire        pred_taken0,
     output wire [31:0] pred_target0,
-    input  wire [31:0] pred_pc1,
     output wire        pred_taken1,
     output wire [31:0] pred_target1,
 
@@ -42,8 +41,11 @@ wire            p0_hit = btb_valid[p0_idx] & (btb_tag[p0_idx] == p0_tag);
 assign pred_taken0  = p0_hit & (btb_cond[p0_idx] ? btb_cnt[p0_idx][1] : 1'b1);
 assign pred_target0 = btb_target[p0_idx];
 
-wire [IDXW-1:0] p1_idx = pred_pc1[IDXLSB +: IDXW];
-wire [TAGW-1:0] p1_tag = pred_pc1[TAGLSB +: TAGW];
+// 第二条查询恒为 pred_pc0 + 4。直接对索引加一，并只在索引回卷时给 tag
+// 加一，避免 IF 先做完整 32 位加法再把结果远距离送到分布式 RAM 地址端。
+wire [IDXW:0] p1_idx_sum = {1'b0, p0_idx} + {{IDXW{1'b0}}, 1'b1};
+wire [IDXW-1:0] p1_idx = p1_idx_sum[IDXW-1:0];
+wire [TAGW-1:0] p1_tag = p0_tag + {{(TAGW-1){1'b0}}, p1_idx_sum[IDXW]};
 wire            p1_hit = btb_valid[p1_idx] & (btb_tag[p1_idx] == p1_tag);
 assign pred_taken1  = p1_hit & (btb_cond[p1_idx] ? btb_cnt[p1_idx][1] : 1'b1);
 assign pred_target1 = btb_target[p1_idx];

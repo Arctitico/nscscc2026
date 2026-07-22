@@ -71,6 +71,13 @@ endfunction
 
 wire [31:0] rf_wdata0 = write_data(wb_r.s0, data_sram_rdata);
 wire [31:0] rf_wdata1 = write_data(wb_r.s1, data_sram_rdata);
+// WB 的 load 永远由下一拍 CM 前递。这里单独构造非 load 数据，避免虽然
+// 最终被 is_ld 条件屏蔽，综合后 D-cache hit/data 仍穿过通用 rf_wdata mux
+// 到达 RF 操作数和乘法器输入。
+wire [31:0] wb_nonload_data0 = (wb_r.s0.rf_wdata_sel == 2'b10)
+                              ? (wb_r.s0.pc + 32'd4) : wb_r.s0.alu_result;
+wire [31:0] wb_nonload_data1 = (wb_r.s1.rf_wdata_sel == 2'b10)
+                              ? (wb_r.s1.pc + 32'd4) : wb_r.s1.alu_result;
 
 assign WB_to_CM_BUS = '{
     s0: '{pc: wb_r.s0.pc, inst: wb_r.s0.inst, rf_wdata: rf_wdata0,
@@ -84,9 +91,9 @@ assign wb_fwd0 = '{valid: wb_valid, rf_we: wb_r.s0.rf_we,
                    // 命中数据在本拍末写入 CM；不把 tag-compare/data_ok
                    // 组合穿过 WB/RF 直接送到下一条指令，下一拍由 CM 前递。
                    is_ld: wb_r.s0.is_mem & (wb_r.s0.rf_wdata_sel == 2'b01),
-                   rf_waddr: wb_r.s0.rf_waddr, rf_wdata: rf_wdata0};
+                   rf_waddr: wb_r.s0.rf_waddr, rf_wdata: wb_nonload_data0};
 assign wb_fwd1 = '{valid: wb_valid & wb_r.v1, rf_we: wb_r.s1.rf_we,
                    is_ld: wb_r.s1.is_mem & (wb_r.s1.rf_wdata_sel == 2'b01),
-                   rf_waddr: wb_r.s1.rf_waddr, rf_wdata: rf_wdata1};
+                   rf_waddr: wb_r.s1.rf_waddr, rf_wdata: wb_nonload_data1};
 
 endmodule

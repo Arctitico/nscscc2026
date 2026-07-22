@@ -75,6 +75,9 @@ typedef struct packed {
     logic [11:0] alu_op;
     logic [31:0] alu_src1;     // src1_is_pc ? pc : 前递后的 rj
     logic [31:0] alu_src2;     // src2_is_imm ? imm : 前递后的 rk/rd
+    // 乘法器专用操作数不含 EX 当拍旁路，物理切断 ALU->DSP 长路径。
+    logic [31:0] mul_src1;
+    logic [31:0] mul_src2;
     logic [31:0] rkd_value;    // 前递后的第二寄存器值（store 数据 / 分支比较）
     logic        is_mul;
     logic        is_cpucfg;

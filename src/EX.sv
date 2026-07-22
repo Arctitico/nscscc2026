@@ -1,6 +1,6 @@
 // ============================================================================
 // Execute：双 ALU，单数据口，单三级乘法器。
-// IS 保证同一 bundle 最多一条访存、最多一条分支；
+// IS 保证同一 bundle 最多一条访存，且执行中的分支只会位于 slot0；
 // 一个 mul.w 只可与独立纯 ALU 共发，bundle 仍整体等待乘法结果后写回。
 // ============================================================================
 import cpu_pkg::*;
@@ -67,25 +67,18 @@ wire        br_taken0   = ex_v0 & (uncond0 | cond_taken0);
 wire [31:0] br_target0  = s0.inst_jirl ? (s0.alu_src1 + s0.imm)
                                          : (s0.pc + s0.imm);
 
-wire        eq1         = (s1.alu_src1 == s1.rkd_value);
-wire        uncond1     = s1.is_branch & ~s1.inst_beq & ~s1.inst_bne;
-wire        cond_taken1 = (s1.inst_beq & eq1) | (s1.inst_bne & ~eq1);
-wire        br_taken1   = ex_v1 & (uncond1 | cond_taken1);
-wire [31:0] br_target1  = s1.inst_jirl ? (s1.alu_src1 + s1.imm)
-                                         : (s1.pc + s1.imm);
-
 wire mispred0 = ex_v0 & s0.is_branch &
                 ((s0.bp_taken ^ br_taken0) |
                  (br_taken0 & s0.bp_taken & (br_target0 != s0.bp_target)));
-wire mispred1 = ex_v1 & s1.is_branch &
-                ((s1.bp_taken ^ br_taken1) |
-                 (br_taken1 & s1.bp_taken & (br_target1 != s1.bp_target)));
 
-// slot0 分支可与非分支 slot1 共发；误预测时必须抹掉更年轻的 slot1。
-wire ex_v1_eff = ex_v1 & ~mispred0;
+// IS 保证分支只在 slot0。允许 branch+ALU 共发，但误预测时必须在
+// EX->WB 提交边界精确杀掉年轻 slot1。注意该信号不进入 RF 旁路网，
+// 避免重新形成“分支比较 -> 全局 ready/旁路”的长组合路径。
+wire ex_v1_commit = ex_v1 & ~mispred0;
+// 保留既有层级调试名，tb_rand 用它打印 EX 的有效年轻槽。
+wire ex_v1_eff = ex_v1_commit;
 
-assign redirect_target = mispred0 ? (br_taken0 ? br_target0 : (s0.pc + 32'd4))
-                                   : (br_taken1 ? br_target1 : (s1.pc + 32'd4));
+assign redirect_target = br_taken0 ? br_target0 : (s0.pc + 32'd4);
 
 // ---------------- 单数据口 ----------------
 wire is_mem0 = ex_v0 & (s0.is_ld | s0.is_st);
@@ -94,7 +87,11 @@ wire is_mem0 = ex_v0 & (s0.is_ld | s0.is_st);
 wire is_mem1 = ex_v1 & (s1.is_ld | s1.is_st);
 wire mem_sel1 = is_mem1;
 
-wire [31:0] mem_addr = mem_sel1 ? alu_result1 : alu_result0;
+// 访存使用独立 AGU，避免地址先穿过通用 ALU 的 one-hot 结果选择再进入
+// D-cache 同步 tag 读。KEEP 防止综合器把它重新与通用 ALU 加法器共享。
+(* keep = "true" *) wire [31:0] mem_addr0 = s0.alu_src1 + s0.alu_src2;
+(* keep = "true" *) wire [31:0] mem_addr1 = s1.alu_src1 + s1.alu_src2;
+wire [31:0] mem_addr = mem_sel1 ? mem_addr1 : mem_addr0;
 wire        st_sel   = mem_sel1 ? s1.is_st : s0.is_st;
 wire        stb_sel  = mem_sel1 ? s1.is_st_b : s0.is_st_b;
 wire [ 3:0] ldw_sel  = mem_sel1 ? s1.ld_width : s0.ld_width;
@@ -133,7 +130,7 @@ assign EX_to_WB_valid = ex_valid & ex_ready_go;
 // WB 可能正在等待更老的访存响应。分支在 EX 被背压时只保留
 // 解析结果，等本 bundle 真正向 WB 推进时再冲刷，避免每拍重复 redirect。
 wire branch_resolve_fire = ex_ready_go & WB_allow_in;
-assign redirect = (mispred0 | mispred1) & branch_resolve_fire;
+assign redirect = mispred0 & branch_resolve_fire;
 
 assign perf_data_wait      = ex_valid & (is_mem0 | is_mem1) & ~data_addr_ok;
 assign perf_mul_wait       = ex_valid & ex_has_mul & ~mul_out_valid;
@@ -145,8 +142,8 @@ assign mul_out_ready = ex_valid & ex_has_mul & WB_allow_in;
 mul u_mul (
     .clk(clk), .reset(reset),
     .in_valid(mul_in_valid), .in_ready(mul_in_ready),
-    .a_in(incoming_mul1 ? RF_to_EX_BUS.s1.alu_src1 : RF_to_EX_BUS.s0.alu_src1),
-    .b_in(incoming_mul1 ? RF_to_EX_BUS.s1.alu_src2 : RF_to_EX_BUS.s0.alu_src2),
+    .a_in(incoming_mul1 ? RF_to_EX_BUS.s1.mul_src1 : RF_to_EX_BUS.s0.mul_src1),
+    .b_in(incoming_mul1 ? RF_to_EX_BUS.s1.mul_src2 : RF_to_EX_BUS.s0.mul_src2),
     .is_signed(1'b1),
     .out_valid(mul_out_valid), .out_ready(mul_out_ready),
     .c_low(mul_low), .c_high(mul_high_unused)
@@ -174,22 +171,20 @@ wire [31:0] execute_result0 = s0.is_cpucfg ? cpucfg(s0.alu_src1)
 wire [31:0] execute_result1 = s1.is_cpucfg ? cpucfg(s1.alu_src1)
                               : s1.is_mul   ? mul_low : alu_result1;
 
-wire upd_sel1   = ex_v1_eff & s1.is_branch;
-wire has_branch = (ex_v0 & s0.is_branch) | upd_sel1;
+wire has_branch = ex_v0 & s0.is_branch;
 assign bp_upd_en      = EX_to_WB_valid & WB_allow_in & has_branch;
-assign bp_upd_pc      = upd_sel1 ? s1.pc : s0.pc;
-assign bp_upd_taken   = upd_sel1 ? br_taken1 : br_taken0;
-assign bp_upd_is_cond = upd_sel1 ? (s1.inst_beq | s1.inst_bne)
-                                 : (s0.inst_beq | s0.inst_bne);
-assign bp_upd_target  = upd_sel1 ? br_target1 : br_target0;
+assign bp_upd_pc      = s0.pc;
+assign bp_upd_taken   = br_taken0;
+assign bp_upd_is_cond = s0.inst_beq | s0.inst_bne;
+assign bp_upd_target  = br_target0;
 
 assign EX_to_WB_BUS = '{
     s0: '{pc: s0.pc, inst: s0.inst, alu_result: execute_result0,
-          is_mem: is_mem0, addr_lo: alu_result0[1:0],
+          is_mem: is_mem0, addr_lo: mem_addr0[1:0],
           ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
           rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr},
     s1: '{pc: s1.pc, inst: s1.inst, alu_result: execute_result1,
-          is_mem: is_mem1, addr_lo: alu_result1[1:0],
+          is_mem: is_mem1, addr_lo: mem_addr1[1:0],
           ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
           rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr},
     v1: ex_v1_eff
@@ -202,8 +197,11 @@ wire [31:0] fwd_data1 = (s1.rf_wdata_sel == 2'b10) ? (s1.pc + 32'd4)
 assign ex_fwd0 = '{valid: ex_v0 & (~s0.is_mul | mul_out_valid),
                    rf_we: s0.rf_we, is_ld: s0.is_ld,
                    rf_waddr: s0.rf_waddr, rf_wdata: fwd_data0};
-assign ex_fwd1 = '{valid: ex_v1_eff & (~s1.is_mul | mul_out_valid),
-                   rf_we: s1.rf_we, is_ld: s1.is_ld,
+// branch+slot1 的结果在分支确认前不直接旁路给下一 bundle。复用
+// is_ld 作为“EX 结果尚不可消费”标志，让 RF 等一拍从 WB 取值；它
+// 与 mispred0 无关，因此不会把分支比较重新接回 RF 的关键路径。
+assign ex_fwd1 = '{valid: ex_v1 & (~s1.is_mul | mul_out_valid),
+                   rf_we: s1.rf_we, is_ld: s1.is_ld | s0.is_branch,
                    rf_waddr: s1.rf_waddr, rf_wdata: fwd_data1};
 
 endmodule

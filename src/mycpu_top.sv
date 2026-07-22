@@ -73,7 +73,7 @@ rf_to_ex_bus_t RF_to_EX_BUS;
 ex_to_wb_bus_t EX_to_WB_BUS;
 wb_to_cm_bus_t WB_to_CM_BUS;
 
-wire [31:0] bp_pc0, bp_pc1;
+wire [31:0] bp_pc0;
 wire        bp_taken0, bp_taken1;
 wire [31:0] bp_target0, bp_target1;
 
@@ -138,7 +138,6 @@ IF u_IF (
     .ID_allow_in     (ID_allow_in     ),
     .IF_to_ID_BUS    (IF_to_ID_BUS    ),
     .bp_pc0          (bp_pc0          ),
-    .bp_pc1          (bp_pc1          ),
     .bp_taken0       (bp_taken0       ),
     .bp_target0      (bp_target0      ),
     .bp_taken1       (bp_taken1       ),
@@ -324,7 +323,6 @@ bpu u_bpu (
     .pred_pc0     (bp_pc0        ),
     .pred_taken0  (bp_taken0     ),
     .pred_target0 (bp_target0    ),
-    .pred_pc1     (bp_pc1        ),
     .pred_taken1  (bp_taken1     ),
     .pred_target1 (bp_target1    ),
     .upd_en       (bp_upd_en     ),
