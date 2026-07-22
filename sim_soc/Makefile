@@ -37,6 +37,9 @@ run:
 SEED  ?= 1
 N     ?= 120
 COUNT ?= 30
+MR    ?= 0.30
+BR    ?= 0.0
+GENFLAGS = --mem-ratio $(MR) --branch-ratio $(BR)
 RFLAGS = --binary --timing --top-module tb_soc_rand -o Vtb_soc_rand \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
@@ -51,7 +54,7 @@ LFLAGS = --binary --timing --top-module tb_level1 -o Vtb_level1 \
          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
 
 rand:
-	python3 ../sim/randgen.py --seed $(SEED) --n $(N) 2>/dev/null
+	python3 ../sim/randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
 	./obj_dir/Vtb_soc_rand
 
@@ -70,7 +73,7 @@ level1:
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
 	@for s in $$(seq 1 $(COUNT)); do \
-	    python3 ../sim/randgen.py --seed $$s --n $(N) 2>/dev/null; \
+	    python3 ../sim/randgen.py --seed $$s --n $(N) $(GENFLAGS) 2>/dev/null; \
 	    out=$$(./obj_dir/Vtb_soc_rand); \
 	    if echo "$$out" | grep -q "SOC RAND TEST PASSED"; then \
 	        echo "seed $$s: PASS"; \

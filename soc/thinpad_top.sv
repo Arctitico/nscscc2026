@@ -119,7 +119,12 @@ mycpu_top u_cpu (
     .debug_wb_inst    (),
     .debug_wb_rf_we   (),
     .debug_wb_rf_wnum (),
-    .debug_wb_rf_wdata()
+    .debug_wb_rf_wdata(),
+    .debug_wb1_pc      (),
+    .debug_wb1_inst    (),
+    .debug_wb1_rf_we   (),
+    .debug_wb1_rf_wnum (),
+    .debug_wb1_rf_wdata()
 );
 
 // ---------------- 访存桥 ----------------

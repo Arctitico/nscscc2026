@@ -28,12 +28,15 @@ lint:
 #       make fuzz            (循环 SEED=1..COUNT, 首个失败即停)
 SEED  ?= 1
 N     ?= 120
+MR    ?= 0.30
+BR    ?= 0.0
+GENFLAGS = --mem-ratio $(MR) --branch-ratio $(BR)
 RFLAGS = --binary --timing --top-module tb_rand -o Vtb_rand \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC
 
 rand:
-	python3 randgen.py --seed $(SEED) --n $(N) 2>/dev/null
+	python3 randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
 	./obj_dir/Vtb_rand
 
@@ -42,13 +45,13 @@ COUNT ?= 50
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
 	@for s in $$(seq 1 $(COUNT)); do \
-	    python3 randgen.py --seed $$s --n $(N) 2>/dev/null; \
+	    python3 randgen.py --seed $$s --n $(N) $(GENFLAGS) 2>/dev/null; \
 	    out=$$(./obj_dir/Vtb_rand); \
 	    if echo "$$out" | grep -q "RAND TEST PASSED"; then \
 	        echo "seed $$s: PASS"; \
 	    else \
 	        echo "seed $$s: FAIL"; echo "$$out"; \
-	        echo "==> 复现: make rand SEED=$$s N=$(N)"; exit 1; \
+	        echo "==> 复现: make rand SEED=$$s N=$(N) MR=$(MR) BR=$(BR)"; exit 1; \
 	    fi; \
 	done; \
 	echo "==== ALL $(COUNT) SEEDS PASSED ===="

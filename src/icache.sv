@@ -1,5 +1,5 @@
 // ============================================================================
-// icache
+// icache：每路 data RAM 拆成奇/偶 bank，一拍读出对齐 8B 内的两条指令。
 // ============================================================================
 module icache #(
     parameter integer IDX_BITS  = 6,   // 组数 = 2^IDX_BITS
@@ -16,7 +16,8 @@ module icache #(
     input  wire [31:0] addr,
     output wire        addr_ok,
     output wire        data_ok,
-    output wire [31:0] rdata,
+    output wire [31:0] rdata_lo,
+    output wire [31:0] rdata_hi,
 
     output wire        inst_rd_req,
     output wire [31:0] inst_rd_addr,    // 行基址（行内偏移清零）
@@ -26,17 +27,18 @@ module icache #(
     input  wire        inst_ret_last
 );
 
-localparam integer NSETS      = (1 << IDX_BITS);
-localparam integer WORDS      = (1 << WORD_BITS);
-localparam integer OFF        = WORD_BITS + 2;        // 行内字节偏移位宽
-localparam integer TAG_BITS   = 32 - IDX_BITS - OFF;
-localparam integer DADDR_BITS = IDX_BITS + WORD_BITS; // 数据阵列字地址位宽
+localparam integer NSETS    = (1 << IDX_BITS);
+localparam integer WORDS    = (1 << WORD_BITS);
+localparam integer OFF      = WORD_BITS + 2;
+localparam integer TAG_BITS = 32 - IDX_BITS - OFF;
+localparam integer HW       = WORD_BITS - 1;
+localparam integer HADDR    = IDX_BITS + HW;
+localparam integer NHALF    = NSETS << HW;
 
 // 入参地址拆分
-wire [IDX_BITS-1:0]   in_idx   = addr[OFF +: IDX_BITS];
-wire [TAG_BITS-1:0]   in_tag   = addr[32-TAG_BITS +: TAG_BITS];
-wire [WORD_BITS-1:0]  in_word  = addr[2 +: WORD_BITS];
-wire [DADDR_BITS-1:0] in_daddr = addr[2 +: DADDR_BITS];   // = {in_idx, in_word}
+wire [IDX_BITS-1:0]  in_idx  = addr[OFF +: IDX_BITS];
+wire [TAG_BITS-1:0]  in_tag  = addr[32-TAG_BITS +: TAG_BITS];
+wire [WORD_BITS-1:0] in_word = addr[2 +: WORD_BITS];
 
 // FSM
 localparam [2:0] S_IDLE=3'd0, S_LOOKUP=3'd1, S_REQ=3'd2, S_FILL=3'd3, S_RELOOKUP=3'd4;
@@ -73,15 +75,16 @@ wire accept = req & ~flush & ( (state==S_IDLE) | (in_lookup & hit) );
 // 本拍读 RAM 的地址只由 cache 自身的同步状态决定。空闲或命中时预读入参
 // 地址；若本拍没有真正 accept，读出的数据会被状态/valid 丢弃。这样避免
 // 将整条流水线的 allow-in/flush 组合链直接接到 BRAM 地址选择端。
-wire                  use_in   = (state == S_IDLE) | (in_lookup & hit);
-wire [IDX_BITS-1:0]   rd_idx   = use_in ? in_idx   : req_idx;
-wire [DADDR_BITS-1:0] rd_daddr = use_in ? in_daddr : {req_idx, req_word};
+wire                  use_in     = (state == S_IDLE) | (in_lookup & hit);
+wire [IDX_BITS-1:0]   rd_idx     = use_in ? in_idx : req_idx;
+wire [WORD_BITS-1:0]  rd_word    = use_in ? in_word : req_word;
+wire [HW-1:0]         rd_word_hi = rd_word[WORD_BITS-1:1];
+wire [HADDR-1:0]      rd_haddr   = {rd_idx, rd_word_hi};
 
 wire victim_way = ~v0_q ? 1'b0 : ~v1_q ? 1'b1 : lru_q;
 
 assign addr_ok = accept;
 assign data_ok = in_lookup & hit & ~flush;
-assign rdata   = hit0 ? data0_q : data1_q;
 
 assign inst_rd_req  = (state == S_REQ);
 assign inst_rd_addr = {req_tag, req_idx, {OFF{1'b0}}};
@@ -164,26 +167,42 @@ end
 // =========================== 存储阵列 ===========================
 reg [TAG_BITS-1:0] tag0_mem [0:NSETS-1];
 reg [TAG_BITS-1:0] tag1_mem [0:NSETS-1];
-reg [31:0]         data0_mem[0:NSETS*WORDS-1];
-reg [31:0]         data1_mem[0:NSETS*WORDS-1];
-reg [31:0]         data0_q, data1_q;
+reg [31:0]         data0_even[0:NHALF-1];
+reg [31:0]         data0_odd [0:NHALF-1];
+reg [31:0]         data1_even[0:NHALF-1];
+reg [31:0]         data1_odd [0:NHALF-1];
+reg [31:0]         d0e_q, d0o_q, d1e_q, d1o_q;
 
 reg [NSETS-1:0] valid0, valid1;
 
-wire [IDX_BITS-1:0] snoop_idx = snoop_addr[OFF +: IDX_BITS];
-wire [TAG_BITS-1:0] snoop_tag = snoop_addr[32-TAG_BITS +: TAG_BITS];
+// 数据写地址来自 EX 的组合 ALU。先登记一拍再查 tag/清 valid，避免把
+// 第二槽地址计算直接接到 I-cache 分布式 RAM 的写端；连续写仍逐拍捕获。
+// 本核没有 fence.i，测试监控程序在写完代码后才跳转，延迟一拍不改变可见性。
+reg        snoop_valid_q;
+reg [31:0] snoop_addr_q;
+wire [IDX_BITS-1:0] snoop_idx = snoop_addr_q[OFF +: IDX_BITS];
+wire [TAG_BITS-1:0] snoop_tag = snoop_addr_q[32-TAG_BITS +: TAG_BITS];
+
+always @(posedge clk) begin
+    if (reset) snoop_valid_q <= 1'b0;
+    else       snoop_valid_q <= snoop_valid;
+
+    if (snoop_valid)
+        snoop_addr_q <= snoop_addr;
+end
 
 wire we0 = refill_word & (rfl_way == 1'b0);
 wire we1 = refill_word & (rfl_way == 1'b1);
+wire [HW-1:0]    rfl_hi   = rfl_cnt[WORD_BITS-1:1];
+wire [HADDR-1:0] wr_haddr = {req_idx, rfl_hi};
+wire we0e = we0 & ~rfl_cnt[0];
+wire we0o = we0 &  rfl_cnt[0];
+wire we1e = we1 & ~rfl_cnt[0];
+wire we1o = we1 &  rfl_cnt[0];
 
 always @(posedge clk) begin
     if (we0) tag0_mem[req_idx] <= req_tag;
     else     tag0_q            <= tag0_mem[rd_idx];
-end
-
-always @(posedge clk) begin
-    if (we0) data0_mem[{req_idx, rfl_cnt}] <= refill_data_q;
-    else     data0_q                       <= data0_mem[rd_daddr];
 end
 
 always @(posedge clk) begin
@@ -192,9 +211,27 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (we1) data1_mem[{req_idx, rfl_cnt}] <= refill_data_q;
-    else     data1_q                       <= data1_mem[rd_daddr];
+    if (we0e) data0_even[wr_haddr] <= refill_data_q;
+    else      d0e_q                <= data0_even[rd_haddr];
 end
+
+always @(posedge clk) begin
+    if (we0o) data0_odd[wr_haddr] <= refill_data_q;
+    else      d0o_q               <= data0_odd[rd_haddr];
+end
+
+always @(posedge clk) begin
+    if (we1e) data1_even[wr_haddr] <= refill_data_q;
+    else      d1e_q                <= data1_even[rd_haddr];
+end
+
+always @(posedge clk) begin
+    if (we1o) data1_odd[wr_haddr] <= refill_data_q;
+    else      d1o_q               <= data1_odd[rd_haddr];
+end
+
+assign rdata_lo = hit0 ? d0e_q : d1e_q;
+assign rdata_hi = hit0 ? d0o_q : d1o_q;
 
 always @(posedge clk) begin
     if (reset) begin
@@ -205,7 +242,7 @@ always @(posedge clk) begin
             if (rfl_way) valid1[req_idx] <= 1'b1;
             else         valid0[req_idx] <= 1'b1;
         end
-        if (snoop_valid) begin
+        if (snoop_valid_q) begin
             if (valid0[snoop_idx] && (tag0_mem[snoop_idx] == snoop_tag))
                 valid0[snoop_idx] <= 1'b0;
             if (valid1[snoop_idx] && (tag1_mem[snoop_idx] == snoop_tag))

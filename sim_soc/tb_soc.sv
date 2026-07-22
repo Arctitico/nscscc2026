@@ -78,13 +78,23 @@ module tb_soc;
     reg started;
 
     always @(posedge clk_50M) begin
-        if (started && (|u_dut.u_cpu.debug_wb_rf_we)) begin
-            arch[u_dut.u_cpu.debug_wb_rf_wnum] <= u_dut.u_cpu.debug_wb_rf_wdata;
-            commits <= commits + 1;
-            if (commits < 80)
-                $display("[commit %0d] pc=%08x  r%0d <= %08x", commits,
-                         u_dut.u_cpu.debug_wb_pc, u_dut.u_cpu.debug_wb_rf_wnum,
-                         u_dut.u_cpu.debug_wb_rf_wdata);
+        if (started) begin
+            if (|u_dut.u_cpu.debug_wb_rf_we) begin
+                arch[u_dut.u_cpu.debug_wb_rf_wnum] <= u_dut.u_cpu.debug_wb_rf_wdata;
+                if (commits < 80)
+                    $display("[commit %0d] pc=%08x  r%0d <= %08x", commits,
+                             u_dut.u_cpu.debug_wb_pc, u_dut.u_cpu.debug_wb_rf_wnum,
+                             u_dut.u_cpu.debug_wb_rf_wdata);
+            end
+            if (|u_dut.u_cpu.debug_wb1_rf_we) begin
+                arch[u_dut.u_cpu.debug_wb1_rf_wnum] <= u_dut.u_cpu.debug_wb1_rf_wdata;
+                if (commits < 80)
+                    $display("[commit %0d#] pc=%08x  r%0d <= %08x", commits,
+                             u_dut.u_cpu.debug_wb1_pc, u_dut.u_cpu.debug_wb1_rf_wnum,
+                             u_dut.u_cpu.debug_wb1_rf_wdata);
+            end
+            commits <= commits + (|u_dut.u_cpu.debug_wb_rf_we) +
+                                   (|u_dut.u_cpu.debug_wb1_rf_we);
         end
     end
 

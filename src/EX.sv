@@ -1,5 +1,6 @@
 // ============================================================================
-// Execute
+// Execute：双 ALU，单数据口，单三级乘法器。
+// IS 保证同一 bundle 最多一条访存、最多一条分支，mul.w 单独发射。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -15,18 +16,17 @@ module EX (
     input  rf_to_ex_bus_t   RF_to_EX_BUS,
     output ex_to_wb_bus_t   EX_to_WB_BUS,
 
-    // 预测错误时，重定向
     output wire             redirect,
     output wire   [31:0]    redirect_target,
 
-    // 分支预测器更新
     output wire             bp_upd_en,
     output wire   [31:0]    bp_upd_pc,
     output wire             bp_upd_taken,
     output wire             bp_upd_is_cond,
     output wire   [31:0]    bp_upd_target,
 
-    output fwd_bus_t        ex_fwd,
+    output fwd_bus_t        ex_fwd0,
+    output fwd_bus_t        ex_fwd1,
 
     output wire             data_sram_en,
     output wire   [ 3:0]    data_sram_we,
@@ -40,7 +40,78 @@ module EX (
 reg            ex_valid;
 rf_to_ex_bus_t eb;
 
-wire is_mem = eb.is_ld | eb.is_st;
+rf_ex_slot_t s0;
+rf_ex_slot_t s1;
+assign s0 = eb.s0;
+assign s1 = eb.s1;
+
+wire ex_v0 = ex_valid;
+wire ex_v1 = ex_valid & eb.v1;
+
+wire [31:0] alu_result0;
+wire [31:0] alu_result1;
+alu u_alu0(.alu_src1(s0.alu_src1), .alu_src2(s0.alu_src2),
+           .alu_op(s0.alu_op), .alu_result(alu_result0));
+alu u_alu1(.alu_src1(s1.alu_src1), .alu_src2(s1.alu_src2),
+           .alu_op(s1.alu_op), .alu_result(alu_result1));
+
+// ---------------- 分支解析 ----------------
+wire        eq0         = (s0.alu_src1 == s0.rkd_value);
+wire        uncond0     = s0.is_branch & ~s0.inst_beq & ~s0.inst_bne;
+wire        cond_taken0 = (s0.inst_beq & eq0) | (s0.inst_bne & ~eq0);
+wire        br_taken0   = ex_v0 & (uncond0 | cond_taken0);
+wire [31:0] br_target0  = s0.inst_jirl ? (s0.alu_src1 + s0.imm)
+                                         : (s0.pc + s0.imm);
+
+wire        eq1         = (s1.alu_src1 == s1.rkd_value);
+wire        uncond1     = s1.is_branch & ~s1.inst_beq & ~s1.inst_bne;
+wire        cond_taken1 = (s1.inst_beq & eq1) | (s1.inst_bne & ~eq1);
+wire        br_taken1   = ex_v1 & (uncond1 | cond_taken1);
+wire [31:0] br_target1  = s1.inst_jirl ? (s1.alu_src1 + s1.imm)
+                                         : (s1.pc + s1.imm);
+
+wire mispred0 = ex_v0 & s0.is_branch &
+                ((s0.bp_taken ^ br_taken0) |
+                 (br_taken0 & s0.bp_taken & (br_target0 != s0.bp_target)));
+wire mispred1 = ex_v1 & s1.is_branch &
+                ((s1.bp_taken ^ br_taken1) |
+                 (br_taken1 & s1.bp_taken & (br_target1 != s1.bp_target)));
+
+// 理论上 slot0 分支不会 co-issue；仍在这里硬件抹掉更年轻的 slot1。
+wire ex_v1_eff = ex_v1 & ~mispred0;
+
+assign redirect        = mispred0 | mispred1;
+assign redirect_target = mispred0 ? (br_taken0 ? br_target0 : (s0.pc + 32'd4))
+                                   : (br_taken1 ? br_target1 : (s1.pc + 32'd4));
+
+// ---------------- 单数据口 ----------------
+wire is_mem0 = ex_v0     & (s0.is_ld | s0.is_st);
+// IS 保证 slot0 分支不会与 slot1 共发，因此 slot1 访存不可能处在 mispred0 的
+// 年轻错误路径上。访存仲裁直接使用 ex_v1，避免把分支目标/误预测组合链串到
+// data_sram_addr 和 I-cache snoop 失效路径；写回 bundle 仍用 ex_v1_eff 防御抹除。
+wire is_mem1 = ex_v1     & (s1.is_ld | s1.is_st);
+wire mem_sel1 = is_mem1;
+
+wire [31:0] mem_addr = mem_sel1 ? alu_result1 : alu_result0;
+wire        st_sel   = mem_sel1 ? s1.is_st : s0.is_st;
+wire        stb_sel  = mem_sel1 ? s1.is_st_b : s0.is_st_b;
+wire [ 3:0] ldw_sel  = mem_sel1 ? s1.ld_width : s0.ld_width;
+wire [31:0] rkd_sel  = mem_sel1 ? s1.rkd_value : s0.rkd_value;
+
+wire [ 3:0] st_wstrb = stb_sel ? (4'b0001 << mem_addr[1:0]) : 4'b1111;
+wire [31:0] st_wdata = stb_sel ? {4{rkd_sel[7:0]}} : rkd_sel;
+
+assign data_sram_en    = is_mem0 | is_mem1;
+assign data_sram_we    = data_sram_en & st_sel ? st_wstrb : 4'b0;
+assign data_sram_size  = (stb_sel | (ldw_sel == 4'b0001)) ? 3'b000 : 3'b010;
+assign data_sram_addr  = mem_addr;
+assign data_sram_wdata = st_wdata;
+
+// ---------------- 共享乘法器 ----------------
+wire incoming_mul1 = RF_to_EX_BUS.v1 & RF_to_EX_BUS.s1.is_mul;
+wire incoming_mul  = RF_to_EX_BUS.s0.is_mul | incoming_mul1;
+wire ex_mul1       = eb.v1 & s1.is_mul;
+wire ex_has_mul    = s0.is_mul | ex_mul1;
 
 wire        mul_in_valid;
 wire        mul_in_ready;
@@ -49,17 +120,27 @@ wire        mul_out_ready;
 wire [31:0] mul_low;
 wire [31:0] mul_high_unused;
 
-wire ex_ready_go = eb.is_mul ? mul_out_valid :
-                   is_mem    ? data_ok       : 1'b1;
+wire ex_ready_go   = ex_has_mul       ? mul_out_valid
+                   : (is_mem0 | is_mem1) ? data_ok
+                                         : 1'b1;
 wire ex_slot_allow = ~ex_valid | (ex_ready_go & WB_allow_in);
+assign EX_allow_in = ex_slot_allow &
+                     (~RF_to_EX_valid | ~incoming_mul | mul_in_ready);
+assign EX_to_WB_valid = ex_valid & ex_ready_go;
 
-// 新乘法指令只有在乘法流水线能接收时才能进入 EX；其它指令不受影响。
-assign EX_allow_in    = ex_slot_allow &
-                        (~RF_to_EX_valid | ~RF_to_EX_BUS.is_mul | mul_in_ready);
-assign EX_to_WB_valid =  ex_valid &  ex_ready_go;
+assign mul_in_valid  = RF_to_EX_valid & EX_allow_in & incoming_mul;
+assign mul_out_ready = ex_valid & ex_has_mul & WB_allow_in;
 
-// eb 只是由 ex_valid 限定有效性的流水载荷，无效时保留旧值即可。
-// 控制寄存器使用同步复位，避免异步复位路径进入 I-cache BRAM 地址逻辑。
+mul u_mul (
+    .clk(clk), .reset(reset),
+    .in_valid(mul_in_valid), .in_ready(mul_in_ready),
+    .a_in(incoming_mul1 ? RF_to_EX_BUS.s1.alu_src1 : RF_to_EX_BUS.s0.alu_src1),
+    .b_in(incoming_mul1 ? RF_to_EX_BUS.s1.alu_src2 : RF_to_EX_BUS.s0.alu_src2),
+    .is_signed(1'b1),
+    .out_valid(mul_out_valid), .out_ready(mul_out_ready),
+    .c_low(mul_low), .c_high(mul_high_unused)
+);
+
 always @(posedge clk) begin
     if (reset)            ex_valid <= 1'b0;
     else if (EX_allow_in) ex_valid <= RF_to_EX_valid;
@@ -69,94 +150,49 @@ always @(posedge clk) begin
     if (RF_to_EX_valid & EX_allow_in) eb <= RF_to_EX_BUS;
 end
 
-wire [31:0] alu_result;
-alu u_alu(
-    .alu_src1   (eb.alu_src1),
-    .alu_src2   (eb.alu_src2),
-    .alu_op     (eb.alu_op  ),
-    .alu_result (alu_result )
-);
-
-assign mul_in_valid  = RF_to_EX_valid & EX_allow_in & RF_to_EX_BUS.is_mul;
-assign mul_out_ready = ex_valid & eb.is_mul & WB_allow_in;
-
-mul u_mul (
-    .clk        (clk                         ),
-    .reset      (reset                       ),
-    .in_valid   (mul_in_valid                ),
-    .in_ready   (mul_in_ready                ),
-    .a_in       (RF_to_EX_BUS.alu_src1       ),
-    .b_in       (RF_to_EX_BUS.alu_src2       ),
-    .is_signed  (1'b1                        ),
-    .out_valid  (mul_out_valid               ),
-    .out_ready  (mul_out_ready               ),
-    .c_low      (mul_low                     ),
-    .c_high     (mul_high_unused             )
-);
-
-// 无 Cache baseline 只需要让默认 supervisor 识别“没有 I/D Cache”。
-// 当前软件只读取 0x10；其它未实现配置字按架构约定返回 0。
-logic [31:0] cpucfg_result;
-always_comb begin
-    unique case (eb.alu_src1)
-        32'h0000_0010: cpucfg_result = 32'h0000_0000;
-        default:       cpucfg_result = 32'h0000_0000;
+function automatic [31:0] cpucfg(input [31:0] index);
+    // 无 Cache 架构路线：CPUCFG[0x10] 报告 I/D Cache 均不存在。
+    case (index)
+        32'h0000_0010: cpucfg = 32'h0000_0000;
+        default:       cpucfg = 32'h0000_0000;
     endcase
-end
+endfunction
 
-wire [31:0] execute_result = eb.is_cpucfg ? cpucfg_result :
-                             eb.is_mul    ? mul_low       : alu_result;
+wire [31:0] execute_result0 = s0.is_cpucfg ? cpucfg(s0.alu_src1)
+                              : s0.is_mul   ? mul_low : alu_result0;
+wire [31:0] execute_result1 = s1.is_cpucfg ? cpucfg(s1.alu_src1)
+                              : s1.is_mul   ? mul_low : alu_result1;
 
-wire        eq         = (eb.alu_src1 == eb.rkd_value);
-wire        uncond     = eb.is_branch & ~eb.inst_beq & ~eb.inst_bne;
-wire        cond_taken = (eb.inst_beq & eq) | (eb.inst_bne & ~eq);
-wire        br_taken   = ex_valid & (uncond | cond_taken);
-wire [31:0] br_target  = eb.inst_jirl ? (eb.alu_src1 + eb.imm)    // jirl
-                                      : (eb.pc       + eb.imm);   // b/bl/beq/bne
-
-// 对于分支指令，预测错误时，重定向
-// 分为 direction 错误和 target 错误两种情况
-wire dir_wrong = eb.bp_taken ^ br_taken;
-wire tgt_wrong = br_taken & eb.bp_taken & (br_target != eb.bp_target);
-assign redirect        = ex_valid & eb.is_branch & (dir_wrong | tgt_wrong);
-assign redirect_target = br_taken ? br_target : (eb.pc + 32'd4);
-
-// 分支预测器更新
-assign bp_upd_en      = EX_to_WB_valid & WB_allow_in & eb.is_branch;
-assign bp_upd_pc      = eb.pc;
-assign bp_upd_taken   = br_taken;
-assign bp_upd_is_cond = eb.inst_beq | eb.inst_bne;
-assign bp_upd_target  = br_target;
-
-wire [ 3:0] st_wstrb = eb.is_st_b ? (4'b0001 << alu_result[1:0]) : 4'b1111;
-wire [31:0] st_wdata = eb.is_st_b ? {4{eb.rkd_value[7:0]}}       : eb.rkd_value;
-
-assign data_sram_en    = ex_valid & (eb.is_ld | eb.is_st);
-assign data_sram_we    = (ex_valid & eb.is_st) ? st_wstrb : 4'b0;
-assign data_sram_size  = (eb.is_st_b | (eb.is_ld & (eb.ld_width == 4'b0001))) ? 3'b000 : 3'b010;
-assign data_sram_addr  = alu_result;
-assign data_sram_wdata = st_wdata;
+wire upd_sel1   = ex_v1_eff & s1.is_branch;
+wire has_branch = (ex_v0 & s0.is_branch) | upd_sel1;
+assign bp_upd_en      = EX_to_WB_valid & WB_allow_in & has_branch;
+assign bp_upd_pc      = upd_sel1 ? s1.pc : s0.pc;
+assign bp_upd_taken   = upd_sel1 ? br_taken1 : br_taken0;
+assign bp_upd_is_cond = upd_sel1 ? (s1.inst_beq | s1.inst_bne)
+                                 : (s0.inst_beq | s0.inst_bne);
+assign bp_upd_target  = upd_sel1 ? br_target1 : br_target0;
 
 assign EX_to_WB_BUS = '{
-    pc:            eb.pc,
-    inst:          eb.inst,
-    alu_result:    execute_result,
-    mem_rdata:     data_sram_rdata,
-    addr_lo:       alu_result[1:0],
-    ld_width:      eb.ld_width,
-    ld_ext_signed: eb.ld_ext_signed,
-    rf_wdata_sel:  eb.rf_wdata_sel,
-    rf_we:         eb.rf_we,
-    rf_waddr:      eb.rf_waddr
+    s0: '{pc: s0.pc, inst: s0.inst, alu_result: execute_result0,
+          mem_rdata: data_sram_rdata, addr_lo: alu_result0[1:0],
+          ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
+          rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr},
+    s1: '{pc: s1.pc, inst: s1.inst, alu_result: execute_result1,
+          mem_rdata: data_sram_rdata, addr_lo: alu_result1[1:0],
+          ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
+          rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr},
+    v1: ex_v1_eff
 };
 
-wire [31:0] ex_fwd_data = (eb.rf_wdata_sel == 2'b10) ? (eb.pc + 32'd4) : execute_result;
-assign ex_fwd = '{
-    valid:    ex_valid & (~eb.is_mul | mul_out_valid),
-    rf_we:    eb.rf_we,
-    is_ld:    eb.is_ld,
-    rf_waddr: eb.rf_waddr,
-    rf_wdata: ex_fwd_data
-};
+wire [31:0] fwd_data0 = (s0.rf_wdata_sel == 2'b10) ? (s0.pc + 32'd4)
+                                                       : execute_result0;
+wire [31:0] fwd_data1 = (s1.rf_wdata_sel == 2'b10) ? (s1.pc + 32'd4)
+                                                       : execute_result1;
+assign ex_fwd0 = '{valid: ex_v0 & (~s0.is_mul | mul_out_valid),
+                   rf_we: s0.rf_we, is_ld: s0.is_ld,
+                   rf_waddr: s0.rf_waddr, rf_wdata: fwd_data0};
+assign ex_fwd1 = '{valid: ex_v1_eff & (~s1.is_mul | mul_out_valid),
+                   rf_we: s1.rf_we, is_ld: s1.is_ld,
+                   rf_waddr: s1.rf_waddr, rf_wdata: fwd_data1};
 
 endmodule

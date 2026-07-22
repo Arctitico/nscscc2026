@@ -26,6 +26,10 @@ module tb_rand;
     wire [ 3:0] debug_wb_rf_we;
     wire [ 4:0] debug_wb_rf_wnum;
     wire [31:0] debug_wb_rf_wdata;
+    wire [31:0] debug_wb1_pc;
+    wire [ 3:0] debug_wb1_rf_we;
+    wire [ 4:0] debug_wb1_rf_wnum;
+    wire [31:0] debug_wb1_rf_wdata;
 
     mycpu_top u_cpu(
         .clk(clk), .resetn(resetn),
@@ -37,7 +41,9 @@ module tb_rand;
         .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
         .data_sram_rdata(data_sram_rdata), .data_ok(1'b1),
         .debug_wb_pc(debug_wb_pc), .debug_wb_inst(), .debug_wb_rf_we(debug_wb_rf_we),
-        .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata)
+        .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata),
+        .debug_wb1_pc(debug_wb1_pc), .debug_wb1_inst(), .debug_wb1_rf_we(debug_wb1_rf_we),
+        .debug_wb1_rf_wnum(debug_wb1_rf_wnum), .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
     );
 
     // ---- 行为级内存 (组合读, 沿写) ----
@@ -94,28 +100,42 @@ module tb_rand;
     reg [31:0] g_mem [0:MAXT-1];
     integer ncommit, nmem;
 
-    // ---- 锁步比对 ----
+    // ---- 锁步比对（同拍按 slot0、slot1 的程序序检查）----
     integer tptr, errors;
 
+    task automatic check_commit(input [31:0] cpc, input [4:0] cwn, input [31:0] cwd);
+        if (tptr >= ncommit) begin
+            $display("  FAIL extra commit #%0d pc=%08x r%0d<=%08x (golden 已耗尽, 期望 %0d 条)",
+                     tptr, cpc, cwn, cwd, ncommit);
+            errors = errors + 1;
+        end else if (cpc !== g_pc[tptr] || {27'b0,cwn} !== g_wn[tptr] || cwd !== g_wd[tptr]) begin
+            $display("  FAIL commit #%0d", tptr);
+            $display("    DUT   : pc=%08x r%0d <= %08x", cpc, cwn, cwd);
+            $display("    GOLDEN: pc=%08x r%0d <= %08x", g_pc[tptr], g_wn[tptr], g_wd[tptr]);
+            errors = errors + 1;
+        end
+        tptr = tptr + 1;
+    endtask
+
     always @(posedge clk) begin
-        if (resetn && (|debug_wb_rf_we)) begin
-            if (tptr >= ncommit) begin
-                $display("  FAIL extra commit #%0d pc=%08x r%0d<=%08x (golden 已耗尽, 期望 %0d 条)",
-                         tptr, debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata, ncommit);
-                errors = errors + 1;
-            end else begin
-                if (debug_wb_pc !== g_pc[tptr] ||
-                    {27'b0,debug_wb_rf_wnum} !== g_wn[tptr] ||
-                    debug_wb_rf_wdata !== g_wd[tptr]) begin
-                    $display("  FAIL commit #%0d", tptr);
-                    $display("    DUT   : pc=%08x r%0d <= %08x",
-                             debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
-                    $display("    GOLDEN: pc=%08x r%0d <= %08x",
-                             g_pc[tptr], g_wn[tptr], g_wd[tptr]);
-                    errors = errors + 1;
-                end
-            end
-            tptr = tptr + 1;
+        if (resetn) begin
+            if (|debug_wb_rf_we)  check_commit(debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
+            if (|debug_wb1_rf_we) check_commit(debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
+            if ($test$plusargs("trace_mem") && data_sram_en && (|data_sram_we))
+                $display("[STORE] pc0=%08x pc1=%08x v1=%0b addr=%08x we=%x data=%08x",
+                         u_cpu.u_EX.s0.pc, u_cpu.u_EX.s1.pc, u_cpu.u_EX.ex_v1_eff,
+                         data_sram_addr, data_sram_we, data_sram_wdata);
+            if ($test$plusargs("trace_tail") && u_cpu.u_CM.cm_valid &&
+                (u_cpu.u_CM.cm_r.s0.pc >= 32'h1c000480))
+                $display("[CM] pc0=%08x v1=%0b pc1=%08x",
+                         u_cpu.u_CM.cm_r.s0.pc, u_cpu.u_CM.cm_r.v1,
+                         u_cpu.u_CM.cm_r.s1.pc);
+            if ($test$plusargs("trace_tail") &&
+                (u_cpu.u_IF.pc_f1 >= 32'h1c000480))
+                $display("[PIPE] f1=%08x req=%0b fire=%0b f2v=%0b ifv=%0b idallow=%0b redirect=%0b target=%08x",
+                         u_cpu.u_IF.pc_f1, u_cpu.ic_req, u_cpu.u_IF.f1_fire,
+                         u_cpu.u_IF.valid_f2, u_cpu.IF_to_ID_valid, u_cpu.ID_allow_in,
+                         u_cpu.redirect, u_cpu.redirect_target);
         end
     end
 
@@ -161,7 +181,9 @@ module tb_rand;
         while (tptr < ncommit && guard < 20*ncommit + 2000) begin
             @(posedge clk); guard = guard + 1;
         end
-        repeat (20) @(posedge clk);   // 留窗口暴露「多提交」
+        // 分支可跳过最后数条写寄存器指令；提交黄金流耗尽后，尾部仍可能
+        // 有无写回的 store 在流水线中。留足够窗口让它们落盘，同时暴露多提交。
+        repeat (200) @(posedge clk);
 
         // ---- 结果 ----
         if (tptr < ncommit) begin

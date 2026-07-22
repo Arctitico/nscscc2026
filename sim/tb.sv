@@ -23,6 +23,10 @@ module tb;
     wire [ 3:0] debug_wb_rf_we;
     wire [ 4:0] debug_wb_rf_wnum;
     wire [31:0] debug_wb_rf_wdata;
+    wire [31:0] debug_wb1_pc;
+    wire [ 3:0] debug_wb1_rf_we;
+    wire [ 4:0] debug_wb1_rf_wnum;
+    wire [31:0] debug_wb1_rf_wdata;
 
     mycpu_top u_cpu(
         .clk(clk), .resetn(resetn),
@@ -34,7 +38,9 @@ module tb;
         .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
         .data_sram_rdata(data_sram_rdata), .data_ok(1'b1),
         .debug_wb_pc(debug_wb_pc), .debug_wb_inst(), .debug_wb_rf_we(debug_wb_rf_we),
-        .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata)
+        .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata),
+        .debug_wb1_pc(debug_wb1_pc), .debug_wb1_inst(), .debug_wb1_rf_we(debug_wb1_rf_we),
+        .debug_wb1_rf_wnum(debug_wb1_rf_wnum), .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
     );
 
     // ---- 行为级内存 ----
@@ -96,12 +102,20 @@ module tb;
     integer commits;
 
     always @(posedge clk) begin
-        if (resetn && (|debug_wb_rf_we)) begin
-            arch[debug_wb_rf_wnum] <= debug_wb_rf_wdata;
-            commits <= commits + 1;
-            if (commits < 80)
-                $display("[commit %0d] pc=%08x  r%0d <= %08x",
-                         commits, debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
+        if (resetn) begin
+            if (|debug_wb_rf_we) begin
+                arch[debug_wb_rf_wnum] <= debug_wb_rf_wdata;
+                if (commits < 80)
+                    $display("[commit %0d] pc=%08x  r%0d <= %08x",
+                             commits, debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
+            end
+            if (|debug_wb1_rf_we) begin
+                arch[debug_wb1_rf_wnum] <= debug_wb1_rf_wdata;
+                if (commits < 80)
+                    $display("[commit %0d#] pc=%08x  r%0d <= %08x",
+                             commits, debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
+            end
+            commits <= commits + (|debug_wb_rf_we) + (|debug_wb1_rf_we);
         end
     end
 

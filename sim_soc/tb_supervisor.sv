@@ -27,6 +27,10 @@ module tb_supervisor;
     wire [ 3:0] debug_wb_rf_we;
     wire [ 4:0] debug_wb_rf_wnum;
     wire [31:0] debug_wb_rf_wdata;
+    wire [31:0] debug_wb1_pc;
+    wire [ 3:0] debug_wb1_rf_we;
+    wire [ 4:0] debug_wb1_rf_wnum;
+    wire [31:0] debug_wb1_rf_wdata;
 
     wire [19:0] base_ram_addr;
     wire [ 3:0] base_ram_be_n;
@@ -58,7 +62,9 @@ module tb_supervisor;
         .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
         .data_sram_rdata(data_sram_rdata), .data_ok(data_ok),
         .debug_wb_pc(debug_wb_pc), .debug_wb_inst(), .debug_wb_rf_we(debug_wb_rf_we),
-        .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata)
+        .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata),
+        .debug_wb1_pc(debug_wb1_pc), .debug_wb1_inst(), .debug_wb1_rf_we(debug_wb1_rf_we),
+        .debug_wb1_rf_wnum(debug_wb1_rf_wnum), .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
     );
 
     mem_bridge #(.SRAM_LATENCY(2)) u_bridge (
@@ -138,9 +144,11 @@ module tb_supervisor;
             refill_count <= 0;
         end else if (u_cpu.IF_to_ID_valid && u_cpu.ID_allow_in) begin
             if ($test$plusargs("trace_boot") && fetch_count < 12)
-                $display("[fetch %0d] pc=%08x inst=%08x", fetch_count,
-                         u_cpu.IF_to_ID_BUS.pc, u_cpu.IF_to_ID_BUS.inst);
-            fetch_count <= fetch_count + 1;
+                $display("[fetch %0d] pc0=%08x inst0=%08x v1=%0b pc1=%08x inst1=%08x", fetch_count,
+                         u_cpu.IF_to_ID_BUS.s0.pc, u_cpu.IF_to_ID_BUS.s0.inst,
+                         u_cpu.IF_to_ID_BUS.v1,
+                         u_cpu.IF_to_ID_BUS.s1.pc, u_cpu.IF_to_ID_BUS.s1.inst);
+            fetch_count <= fetch_count + 1 + u_cpu.IF_to_ID_BUS.v1;
         end
         if (!reset && inst_ret_valid && refill_count < 12) begin
             if ($test$plusargs("trace_boot"))
@@ -153,11 +161,14 @@ module tb_supervisor;
     always @(posedge clk) begin
         if (reset) begin
             commit_count <= 0;
-        end else if (|debug_wb_rf_we) begin
-            if ($test$plusargs("trace_boot") && commit_count < 80)
+        end else begin
+            if ((|debug_wb_rf_we) && $test$plusargs("trace_boot") && commit_count < 80)
                 $display("[boot %0d] pc=%08x r%0d<=%08x", commit_count,
                          debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
-            commit_count <= commit_count + 1;
+            if ((|debug_wb1_rf_we) && $test$plusargs("trace_boot") && commit_count < 80)
+                $display("[boot %0d#] pc=%08x r%0d<=%08x", commit_count,
+                         debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
+            commit_count <= commit_count + (|debug_wb_rf_we) + (|debug_wb1_rf_we);
         end
     end
 

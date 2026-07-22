@@ -3,8 +3,8 @@
 # randgen.py —— LA32R 2026 baseline 随机指令生成器 + 黄金模型(DiffTest 参考)
 #
 # 思路(DiffTest / 协同仿真):
-#   1) 随机生成一段「直线」程序(算术/逻辑/移位/立即数/字与字节访存),不含分支,
-#      因此一定终止、地址受限、易于产出正解。
+#   1) 随机生成算术/逻辑/移位/访存，并可选插入只向前跳的分支，
+#      因此程序仍然必定终止。
 #   2) 黄金模型对「编码后的 32 位指令字」做*独立*译码+执行(不复用编码器的语义),
 #      产出 in-order 提交流(每条写寄存器指令一条记录: pc/wnum/wdata)与最终内存镜像。
 #   3) tb_rand.sv 把 CPU 每拍提交(debug_wb_*)与黄金提交流逐条比对(锁步),
@@ -37,6 +37,7 @@ def i20(x): return x & 0xFFFFF
 def enc_3r(base, rd, rj, rk):   return base | ((rk&31)<<10) | ((rj&31)<<5) | (rd&31)
 def enc_2ri12(base, rd, rj, im):return base | (i12(im)<<10) | ((rj&31)<<5) | (rd&31)
 def enc_2ri5(base, rd, rj, u5): return base | ((u5&31)<<10) | ((rj&31)<<5) | (rd&31)
+def enc_2ri16(base, rd, rj, off):return base | (i16(off)<<10) | ((rj&31)<<5) | (rd&31)
 def enc_1ri20(base, rd, im):    return base | (i20(im)<<5) | (rd&31)
 def enc_i26(base, off):
     o = off & 0x3FFFFFF
@@ -77,6 +78,23 @@ class Golden:
 
     def step(self, pc, inst):
         op6  = (inst>>26)&0x3F
+        if op6 in (0x13, 0x14, 0x15, 0x16, 0x17):
+            rd = inst & 31
+            rj = (inst>>5) & 31
+            off16 = sext((inst>>10) & 0xFFFF, 16) << 2
+            off26 = sext(((inst & 0x3FF) << 16) | ((inst>>10) & 0xFFFF), 26) << 2
+            if op6 == 0x14:                                      # b
+                return u32(pc + off26)
+            if op6 == 0x15:                                      # bl
+                self.commit(pc, 1, pc + 4)
+                return u32(pc + off26)
+            if op6 == 0x13:                                      # jirl
+                target = u32(self.R[rj] + off16)
+                self.commit(pc, rd, pc + 4)
+                return target
+            taken = (self.R[rj] == self.R[rd]) if op6 == 0x16 else (self.R[rj] != self.R[rd])
+            return u32(pc + off16) if taken else u32(pc + 4)
+
         op22 = (inst>>22)&0xF
         op20 = (inst>>20)&0x3
         op15 = (inst>>15)&0x1F
@@ -126,11 +144,12 @@ class Golden:
             else: raise ValueError("bad mem %08x" % inst)
         else:
             raise ValueError("unhandled inst %08x @ pc=%08x" % (inst, pc))
+        return u32(pc + 4)
 
     def run(self, words, max_steps=None):
-        """直线执行 words[]; 最后一条是自旋 b, 在那里停止。"""
+        """执行 words[]（可含前向分支）；最后的自旋 b 表示结束。"""
         n = len(words)
-        if max_steps is None: max_steps = n + 16
+        if max_steps is None: max_steps = n * 4 + 64
         pc = BASE
         steps = 0
         while steps < max_steps:
@@ -138,15 +157,10 @@ class Golden:
             if idx < 0 or idx >= n:
                 break
             inst = words[idx]
-            if (inst >> 26) & 0x3F == 0x14:   # b -> 计算跳转(用于结尾自旋)
-                off = sext(((inst>>10)&0xFFFF) | (((inst>>0)&0x3FF)<<16), 26) << 2
-                tgt = u32(pc + off)
-                if tgt == pc:                 # 自旋 = 程序结束
-                    break
-                pc = tgt
-            else:
-                self.step(pc, inst)
-                pc = u32(pc + 4)
+            next_pc = self.step(pc, inst)
+            if next_pc == pc:
+                break
+            pc = next_pc
             steps += 1
 
 # ============================================================================
@@ -156,7 +170,7 @@ DP_OPS  = ["add.w","sub.w","slt","and","or","xor","sll.w","mul.w",
            "slli.w","srli.w","addi.w","andi","ori","lu12i.w","pcaddu12i","cpucfg"]
 MEM_OPS = ["ld.w","ld.b","st.w","st.b"]
 
-def gen(seed, n, window_words, mem_ratio):
+def gen(seed, n, window_words, mem_ratio, branch_ratio=0.0):
     rng = random.Random(seed)
     win_bytes = window_words * 4
     words = []
@@ -181,7 +195,20 @@ def gen(seed, n, window_words, mem_ratio):
     words.append(enc_1ri20(0x14000000, SCRATCH_REG, SCRATCH >> 12))
     asm.append(("lu12i.w", (SCRATCH_REG, hex(SCRATCH >> 12), "; scratch base")))
 
-    for _ in range(n):
+    for i in range(n):
+        if branch_ratio > 0 and rng.random() < branch_ratio:
+            max_words = max(1, min(8, n - i))
+            offset = rng.randint(1, max_words)
+            op = rng.choice(("b", "beq", "bne"))
+            if op == "b":
+                words.append(enc_i26(0x50000000, offset))
+                asm.append((op, ("+%dw" % offset,)))
+            else:
+                rj, rd = pick_src(), pick_src()
+                base = 0x58000000 if op == "beq" else 0x5C000000
+                words.append(enc_2ri16(base, rd, rj, offset))
+                asm.append((op, (rj, rd, "+%dw" % offset)))
+            continue
         if rng.random() < mem_ratio:
             op = rng.choice(MEM_OPS)
             if op in ("ld.w", "st.w"):
@@ -234,10 +261,12 @@ def main():
     ap.add_argument("--n", type=int, default=120, help="随机指令条数(不含序言/结尾)")
     ap.add_argument("--window", type=int, default=64, help="scratch 窗口字数")
     ap.add_argument("--mem-ratio", type=float, default=0.30, help="访存指令占比")
+    ap.add_argument("--branch-ratio", type=float, default=0.0, help="前向 b/beq/bne 占比")
     ap.add_argument("--out-dir", default=".")
     args = ap.parse_args()
 
-    words, asm, win_bytes = gen(args.seed, args.n, args.window, args.mem_ratio)
+    words, asm, win_bytes = gen(args.seed, args.n, args.window,
+                                args.mem_ratio, args.branch_ratio)
 
     g = Golden()
     g.run(words)

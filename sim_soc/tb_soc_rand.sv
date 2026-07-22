@@ -72,26 +72,32 @@ module tb_soc_rand;
     reg [31:0] g_mem [0:MAXT-1];
     integer ncommit, nmem;
 
-    // ---- 锁步比对 (层次引用 CPU 内部 debug 信号) ----
+    // ---- 锁步比对（同拍先 slot0 后 slot1）----
     integer tptr, errors;
     reg started;
+
+    task automatic check_commit(input [31:0] cpc, input [4:0] cwn, input [31:0] cwd);
+        if (tptr >= ncommit) begin
+            $display("  FAIL extra commit #%0d pc=%08x r%0d<=%08x (golden 已耗尽, 期望 %0d)",
+                     tptr, cpc, cwn, cwd, ncommit);
+            errors = errors + 1;
+        end else if (cpc !== g_pc[tptr] || {27'b0,cwn} !== g_wn[tptr] || cwd !== g_wd[tptr]) begin
+            $display("  FAIL commit #%0d", tptr);
+            $display("    DUT   : pc=%08x r%0d <= %08x", cpc, cwn, cwd);
+            $display("    GOLDEN: pc=%08x r%0d <= %08x", g_pc[tptr], g_wn[tptr], g_wd[tptr]);
+            errors = errors + 1;
+        end
+        tptr = tptr + 1;
+    endtask
+
     always @(posedge clk_50M) begin
-        if (started && (|u_dut.u_cpu.debug_wb_rf_we)) begin
-            if (tptr >= ncommit) begin
-                $display("  FAIL extra commit #%0d pc=%08x r%0d<=%08x (golden 已耗尽, 期望 %0d)",
-                         tptr, u_dut.u_cpu.debug_wb_pc, u_dut.u_cpu.debug_wb_rf_wnum,
-                         u_dut.u_cpu.debug_wb_rf_wdata, ncommit);
-                errors = errors + 1;
-            end else if (u_dut.u_cpu.debug_wb_pc !== g_pc[tptr] ||
-                         {27'b0,u_dut.u_cpu.debug_wb_rf_wnum} !== g_wn[tptr] ||
-                         u_dut.u_cpu.debug_wb_rf_wdata !== g_wd[tptr]) begin
-                $display("  FAIL commit #%0d", tptr);
-                $display("    DUT   : pc=%08x r%0d <= %08x", u_dut.u_cpu.debug_wb_pc,
-                         u_dut.u_cpu.debug_wb_rf_wnum, u_dut.u_cpu.debug_wb_rf_wdata);
-                $display("    GOLDEN: pc=%08x r%0d <= %08x", g_pc[tptr], g_wn[tptr], g_wd[tptr]);
-                errors = errors + 1;
-            end
-            tptr = tptr + 1;
+        if (started) begin
+            if (|u_dut.u_cpu.debug_wb_rf_we)
+                check_commit(u_dut.u_cpu.debug_wb_pc, u_dut.u_cpu.debug_wb_rf_wnum,
+                             u_dut.u_cpu.debug_wb_rf_wdata);
+            if (|u_dut.u_cpu.debug_wb1_rf_we)
+                check_commit(u_dut.u_cpu.debug_wb1_pc, u_dut.u_cpu.debug_wb1_rf_wnum,
+                             u_dut.u_cpu.debug_wb1_rf_wdata);
         end
     end
 
@@ -133,7 +139,8 @@ module tb_soc_rand;
         while (tptr < ncommit && guard < 200*ncommit + 20000) begin
             @(posedge clk_50M); guard = guard + 1;
         end
-        repeat (40) @(posedge clk_50M);
+        // 多周期 SoC 访存下，黄金写回流耗尽后尾部 store 可仍在途。
+        repeat (1000) @(posedge clk_50M);
 
         if (tptr < ncommit) begin
             $display("  FAIL 仅提交 %0d / %0d 条 (CPU 卡住或超时)", tptr, ncommit);

@@ -18,8 +18,9 @@ module ID (
 );
 
 reg            id_valid;
-if_to_id_bus_t id_bus_r;        // pc, inst
+if_to_id_bus_t id_bus_r;
 
+// 这里不要化简，保留 1'b1 是为了可读性
 wire id_ready_go = 1'b1;
 assign ID_allow_in    = ~id_valid | (id_ready_go & RR_allow_in);
 assign ID_to_RR_valid =  id_valid &  id_ready_go;
@@ -34,13 +35,17 @@ always @(posedge clk) begin
     if (IF_to_ID_valid & ID_allow_in) id_bus_r <= IF_to_ID_BUS;
 end
 
-d_bus_t d_bus;
-decoder u_decoder(
-    .inst  (id_bus_r.inst),
-    .d_bus (d_bus        )
-);
+d_bus_t d_bus0;
+d_bus_t d_bus1;
+decoder u_decoder0(.inst(id_bus_r.s0.inst), .d_bus(d_bus0));
+decoder u_decoder1(.inst(id_bus_r.s1.inst), .d_bus(d_bus1));
 
-assign ID_to_RR_BUS = '{pc: id_bus_r.pc, inst: id_bus_r.inst, d_bus: d_bus,
-                        bp_taken: id_bus_r.bp_taken, bp_target: id_bus_r.bp_target};
+assign ID_to_RR_BUS = '{
+    s0: '{pc: id_bus_r.s0.pc, inst: id_bus_r.s0.inst, d_bus: d_bus0,
+          bp_taken: id_bus_r.s0.bp_taken, bp_target: id_bus_r.s0.bp_target},
+    s1: '{pc: id_bus_r.s1.pc, inst: id_bus_r.s1.inst, d_bus: d_bus1,
+          bp_taken: id_bus_r.s1.bp_taken, bp_target: id_bus_r.s1.bp_target},
+    v1: id_bus_r.v1
+};
 
 endmodule

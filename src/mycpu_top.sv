@@ -4,7 +4,7 @@
 // 九级流水：IF → ID → RR → DP → IS → RF → EX → WB → CM
 //          取指 译码 重命名 分发 发射 读寄存器 执行 写回 提交
 //
-// RR/DP/IS 当前为直通缓冲级，为乱序双发射保留（见各模块/ cpu_pkg.sv 注释）
+// 当前为两槽顺序双发射；RR/DP 仍为后续乱序化保留的缓冲级。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -31,7 +31,12 @@ module mycpu_top(
     output wire [31:0] debug_wb_inst,
     output wire [ 3:0] debug_wb_rf_we,
     output wire [ 4:0] debug_wb_rf_wnum,
-    output wire [31:0] debug_wb_rf_wdata
+    output wire [31:0] debug_wb_rf_wdata,
+    output wire [31:0] debug_wb1_pc,
+    output wire [31:0] debug_wb1_inst,
+    output wire [ 3:0] debug_wb1_rf_we,
+    output wire [ 4:0] debug_wb1_rf_wnum,
+    output wire [31:0] debug_wb1_rf_wdata
 );
 
 // resetn 由板级 rst_sync 保证异步拉低、同步释放；CPU 内部统一使用
@@ -65,9 +70,9 @@ rf_to_ex_bus_t RF_to_EX_BUS;
 ex_to_wb_bus_t EX_to_WB_BUS;
 wb_to_cm_bus_t WB_to_CM_BUS;
 
-wire        bp_pred_taken;
-wire [31:0] bp_pred_target;
-wire [31:0] bp_pc;
+wire [31:0] bp_pc0, bp_pc1;
+wire        bp_taken0, bp_taken1;
+wire [31:0] bp_target0, bp_target1;
 
 wire        redirect;
 wire [31:0] redirect_target;
@@ -79,22 +84,21 @@ wire        bp_upd_taken;
 wire        bp_upd_is_cond;
 wire [31:0] bp_upd_target;
 
-fwd_bus_t ex_fwd;
-fwd_bus_t wb_fwd;
-fwd_bus_t cm_fwd;
+fwd_bus_t ex_fwd0, ex_fwd1;
+fwd_bus_t wb_fwd0, wb_fwd1;
+fwd_bus_t cm_fwd0, cm_fwd1;
 
-wire [ 4:0] rf_raddr1, rf_raddr2;
-wire [31:0] rf_rdata1, rf_rdata2;
-wire [31:0] rf_rdata3, rf_rdata4;   
-wire [ 3:0] rf_we1;
-wire [ 4:0] rf_waddr1;
-wire [31:0] rf_wdata1;
+wire [ 4:0] rf_raddr1, rf_raddr2, rf_raddr3, rf_raddr4;
+wire [31:0] rf_rdata1, rf_rdata2, rf_rdata3, rf_rdata4;
+wire [ 3:0] rf_we1, rf_we2;
+wire [ 4:0] rf_waddr1, rf_waddr2;
+wire [31:0] rf_wdata1, rf_wdata2;
 
 wire        ic_req;
 wire [31:0] ic_addr;
 wire        ic_addr_ok;
 wire        ic_data_ok;
-wire [31:0] ic_rdata;
+wire [31:0] ic_rdata_lo, ic_rdata_hi;
 
 // ============================ 流水级例化 ============================
 IF u_IF (
@@ -103,16 +107,20 @@ IF u_IF (
     .IF_to_ID_valid  (IF_to_ID_valid  ),
     .ID_allow_in     (ID_allow_in     ),
     .IF_to_ID_BUS    (IF_to_ID_BUS    ),
-    .bp_pc           (bp_pc           ),
-    .bp_taken        (bp_pred_taken   ),
-    .bp_target       (bp_pred_target  ),
+    .bp_pc0          (bp_pc0          ),
+    .bp_pc1          (bp_pc1          ),
+    .bp_taken0       (bp_taken0       ),
+    .bp_target0      (bp_target0      ),
+    .bp_taken1       (bp_taken1       ),
+    .bp_target1      (bp_target1      ),
     .redirect        (redirect        ),
     .redirect_target (redirect_target ),
     .ic_req          (ic_req          ),
     .ic_addr         (ic_addr         ),
     .ic_addr_ok      (ic_addr_ok      ),
     .ic_data_ok      (ic_data_ok      ),
-    .ic_rdata        (ic_rdata        )
+    .ic_rdata_lo     (ic_rdata_lo     ),
+    .ic_rdata_hi     (ic_rdata_hi     )
 );
 
 ID u_ID (
@@ -175,11 +183,18 @@ RF u_RF (
     .RF_to_EX_BUS  (RF_to_EX_BUS  ),
     .rf_raddr1     (rf_raddr1     ),
     .rf_raddr2     (rf_raddr2     ),
+    .rf_raddr3     (rf_raddr3     ),
+    .rf_raddr4     (rf_raddr4     ),
     .rf_rdata1     (rf_rdata1     ),
     .rf_rdata2     (rf_rdata2     ),
-    .ex_fwd        (ex_fwd        ),
-    .wb_fwd        (wb_fwd        ),
-    .cm_fwd        (cm_fwd        )
+    .rf_rdata3     (rf_rdata3     ),
+    .rf_rdata4     (rf_rdata4     ),
+    .ex_fwd0       (ex_fwd0       ),
+    .ex_fwd1       (ex_fwd1       ),
+    .wb_fwd0       (wb_fwd0       ),
+    .wb_fwd1       (wb_fwd1       ),
+    .cm_fwd0       (cm_fwd0       ),
+    .cm_fwd1       (cm_fwd1       )
 );
 
 EX u_EX (
@@ -198,7 +213,8 @@ EX u_EX (
     .bp_upd_taken   (bp_upd_taken   ),
     .bp_upd_is_cond (bp_upd_is_cond ),
     .bp_upd_target  (bp_upd_target  ),
-    .ex_fwd         (ex_fwd         ),
+    .ex_fwd0        (ex_fwd0        ),
+    .ex_fwd1        (ex_fwd1        ),
     .data_sram_en   (data_sram_en   ),
     .data_sram_we   (data_sram_we   ),
     .data_sram_size (data_sram_size ),
@@ -217,7 +233,8 @@ WB u_WB (
     .WB_to_CM_valid(WB_to_CM_valid),
     .EX_to_WB_BUS  (EX_to_WB_BUS  ),
     .WB_to_CM_BUS  (WB_to_CM_BUS  ),
-    .wb_fwd        (wb_fwd        )
+    .wb_fwd0       (wb_fwd0       ),
+    .wb_fwd1       (wb_fwd1       )
 );
 
 CM u_CM (
@@ -229,12 +246,21 @@ CM u_CM (
     .rf_we1           (rf_we1           ),
     .rf_waddr1        (rf_waddr1        ),
     .rf_wdata1        (rf_wdata1        ),
-    .cm_fwd           (cm_fwd           ),
+    .rf_we2            (rf_we2            ),
+    .rf_waddr2         (rf_waddr2         ),
+    .rf_wdata2         (rf_wdata2         ),
+    .cm_fwd0           (cm_fwd0           ),
+    .cm_fwd1           (cm_fwd1           ),
     .debug_wb_pc      (debug_wb_pc      ),
     .debug_wb_inst    (debug_wb_inst    ),
     .debug_wb_rf_we   (debug_wb_rf_we   ),
     .debug_wb_rf_wnum (debug_wb_rf_wnum ),
-    .debug_wb_rf_wdata(debug_wb_rf_wdata)
+    .debug_wb_rf_wdata(debug_wb_rf_wdata),
+    .debug_wb1_pc      (debug_wb1_pc      ),
+    .debug_wb1_inst    (debug_wb1_inst    ),
+    .debug_wb1_rf_we   (debug_wb1_rf_we   ),
+    .debug_wb1_rf_wnum (debug_wb1_rf_wnum ),
+    .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
 );
 
 // ============================ 寄存器堆 ============================
@@ -242,19 +268,22 @@ regfile u_regfile (
     .clk      (clk      ),
     .rf_raddr1(rf_raddr1), .rf_rdata1(rf_rdata1),
     .rf_raddr2(rf_raddr2), .rf_rdata2(rf_rdata2),
-    .rf_raddr3(5'b0     ), .rf_rdata3(rf_rdata3),
-    .rf_raddr4(5'b0     ), .rf_rdata4(rf_rdata4),
+    .rf_raddr3(rf_raddr3), .rf_rdata3(rf_rdata3),
+    .rf_raddr4(rf_raddr4), .rf_rdata4(rf_rdata4),
     .rf_we1   (rf_we1   ), .rf_waddr1(rf_waddr1), .rf_wdata1(rf_wdata1),
-    .rf_we2   (4'b0     ), .rf_waddr2(5'b0     ), .rf_wdata2(32'b0    )
+    .rf_we2   (rf_we2   ), .rf_waddr2(rf_waddr2), .rf_wdata2(rf_wdata2)
 );
 
 // ============================ 分支预测 ============================
 bpu u_bpu (
     .clk          (clk           ),
     .reset        (reset         ),
-    .pred_pc      (bp_pc         ),
-    .pred_taken   (bp_pred_taken ),
-    .pred_target  (bp_pred_target),
+    .pred_pc0     (bp_pc0        ),
+    .pred_taken0  (bp_taken0     ),
+    .pred_target0 (bp_target0    ),
+    .pred_pc1     (bp_pc1        ),
+    .pred_taken1  (bp_taken1     ),
+    .pred_target1 (bp_target1    ),
     .upd_en       (bp_upd_en     ),
     .upd_pc       (bp_upd_pc     ),
     .upd_taken    (bp_upd_taken  ),
@@ -273,7 +302,8 @@ icache u_icache (
     .addr           (ic_addr        ),
     .addr_ok        (ic_addr_ok     ),
     .data_ok        (ic_data_ok     ),
-    .rdata          (ic_rdata       ),
+    .rdata_lo       (ic_rdata_lo    ),
+    .rdata_hi       (ic_rdata_hi    ),
     .inst_rd_req    (inst_rd_req    ),
     .inst_rd_addr   (inst_rd_addr   ),
     .inst_rd_rdy    (inst_rd_rdy    ),

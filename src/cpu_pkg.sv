@@ -4,11 +4,10 @@
 // 本文件集中定义 9 级流水线（IF ID RR DP IS RF EX WB CM）各级之间传递的
 // packed struct 总线。新增字段时改这里并同步上下游模块。
 //
-// 当前为「顺序单发射 baseline」：
-//   - RR / DP / IS 三级目前是「直通」缓冲级，其总线 struct 只裹一层上一级
-//     的总线（rr_to_dp_bus_t 内含 id_to_rr_bus_t ...）。实现乱序双发射时再在
-//     这些 struct 里扩展重命名 tag / 发射信息，**不要当作冗余去化简掉**。
-//   - regfile.sv 的 4 读 2 写端口也是为双发射保留，baseline 只用 1 读对 + 1 写。
+// 当前为「顺序双发射」：每级承载一个 2 槽 bundle，slot0 程序序在前，
+// slot1 在后，并始终保持 v1 => v0。XX_to_YY_valid 表示 slot0/整组有效，
+// slot1 的有效性由 bundle 中的 v1 携带。RR / DP 仍是直通缓冲，IS 负责保守的
+// co-issue/拆分；未来乱序化时再扩展重命名 tag 和发射队列信息。
 // ============================================================================
 
 package cpu_pkg;
@@ -52,40 +51,23 @@ typedef struct packed {
     logic        inst_bne;     // bne：不等跳转
 } d_bus_t;
 
-// IF -> ID
-// bp_taken/bp_target：IF 取本指令时分支预测器给出的预测，沿流水带到 EX 比对误预测。
+// ===================== 单槽内容 =====================
+// bp_taken/bp_target：IF 取本指令时的预测，沿流水带到 EX 比对。
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
     logic        bp_taken;     // 预测是否跳转
     logic [31:0] bp_target;    // 预测目标（bp_taken=1 时有效）
-} if_to_id_bus_t;
+} if_slot_t;
 
-// ID -> RR
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;         // 提交调试口需要沿流水保存原始指令
     d_bus_t      d_bus;
-    logic        bp_taken;     // 透传预测（RR/DP/IS 直通级裹本结构自动携带）
+    logic        bp_taken;
     logic [31:0] bp_target;
-} id_to_rr_bus_t;
+} id_slot_t;
 
-// RR -> DP（直通：裹一层 id_to_rr_bus_t，乱序时扩展重命名信息）
-typedef struct packed {
-    id_to_rr_bus_t id_to_rr_bus;
-} rr_to_dp_bus_t;
-
-// DP -> IS（直通）
-typedef struct packed {
-    rr_to_dp_bus_t rr_to_dp_bus;
-} dp_to_is_bus_t;
-
-// IS -> RF（直通）
-typedef struct packed {
-    dp_to_is_bus_t dp_to_is_bus;
-} is_to_rf_bus_t;
-
-// RF -> EX：已完成寄存器读 + 前递 + 源操作数选择
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
@@ -113,9 +95,8 @@ typedef struct packed {
     logic [ 1:0] rf_wdata_sel;
     logic        rf_we;
     logic [ 4:0] rf_waddr;
-} rf_to_ex_bus_t;
+} rf_ex_slot_t;
 
-// EX -> WB：ALU 结果 + 原始访存读数据 + 写回控制
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
@@ -127,18 +108,60 @@ typedef struct packed {
     logic [ 1:0] rf_wdata_sel;
     logic        rf_we;
     logic [ 4:0] rf_waddr;
-} ex_to_wb_bus_t;
+} ex_wb_slot_t;
 
-// WB -> CM：最终写回数据
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
     logic [31:0] rf_wdata;
     logic        rf_we;
     logic [ 4:0] rf_waddr;
+} wb_cm_slot_t;
+
+// ===================== 成对级间总线 =====================
+typedef struct packed {
+    if_slot_t s0;
+    if_slot_t s1;
+    logic     v1;
+} if_to_id_bus_t;
+
+typedef struct packed {
+    id_slot_t s0;
+    id_slot_t s1;
+    logic     v1;
+} id_to_rr_bus_t;
+
+typedef struct packed {
+    id_to_rr_bus_t id_to_rr_bus;
+} rr_to_dp_bus_t;
+
+typedef struct packed {
+    rr_to_dp_bus_t rr_to_dp_bus;
+} dp_to_is_bus_t;
+
+typedef struct packed {
+    dp_to_is_bus_t dp_to_is_bus;
+} is_to_rf_bus_t;
+
+typedef struct packed {
+    rf_ex_slot_t s0;
+    rf_ex_slot_t s1;
+    logic        v1;
+} rf_to_ex_bus_t;
+
+typedef struct packed {
+    ex_wb_slot_t s0;
+    ex_wb_slot_t s1;
+    logic        v1;
+} ex_to_wb_bus_t;
+
+typedef struct packed {
+    wb_cm_slot_t s0;
+    wb_cm_slot_t s1;
+    logic        v1;
 } wb_to_cm_bus_t;
 
-// 前递总线：EX / WB / CM 各自向 RF 广播 {有效, 写使能, 写号, 写数据}
+// 每个槽各自向 RF 广播一份前递信息。年轻槽优先级高于年长槽。
 // EX 的数据对加载指令无效（数据尚在访存通路上），用 is_ld 标记触发 load-use 停顿。
 typedef struct packed {
     logic        valid;

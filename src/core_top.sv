@@ -96,7 +96,12 @@ mycpu_top u_mycpu (
     .debug_wb_inst      (debug0_wb_inst),
     .debug_wb_rf_we     (debug0_wb_rf_wen),
     .debug_wb_rf_wnum   (debug0_wb_rf_wnum),
-    .debug_wb_rf_wdata  (debug0_wb_rf_wdata)
+    .debug_wb_rf_wdata  (debug0_wb_rf_wdata),
+    .debug_wb1_pc       (),
+    .debug_wb1_inst     (),
+    .debug_wb1_rf_we    (),
+    .debug_wb1_rf_wnum  (),
+    .debug_wb1_rf_wdata ()
 );
 
 cpu_axi_bridge u_axi_bridge (

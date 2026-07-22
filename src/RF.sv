@@ -18,59 +18,80 @@ module RF (
 
     output wire   [ 4:0]    rf_raddr1,
     output wire   [ 4:0]    rf_raddr2,
+    output wire   [ 4:0]    rf_raddr3,
+    output wire   [ 4:0]    rf_raddr4,
     input  wire   [31:0]    rf_rdata1,
     input  wire   [31:0]    rf_rdata2,
+    input  wire   [31:0]    rf_rdata3,
+    input  wire   [31:0]    rf_rdata4,
 
-    // 前递总线
-    input  fwd_bus_t        ex_fwd,
-    input  fwd_bus_t        wb_fwd,
-    input  fwd_bus_t        cm_fwd
+    input  fwd_bus_t        ex_fwd0,
+    input  fwd_bus_t        ex_fwd1,
+    input  fwd_bus_t        wb_fwd0,
+    input  fwd_bus_t        wb_fwd1,
+    input  fwd_bus_t        cm_fwd0,
+    input  fwd_bus_t        cm_fwd1
 );
 
 reg            rf_valid;
-is_to_rf_bus_t rf_bus_r; // 输入锁存
+is_to_rf_bus_t rf_bus_r;
 
-// 解开直通封装，取出 {pc, d_bus, 预测信息}
-wire [31:0] pc = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.pc;
-wire [31:0] inst = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.inst;
-d_bus_t     db;
-assign db = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.d_bus;
-wire        bp_taken_r  = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.bp_taken;
-wire [31:0] bp_target_r = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus.bp_target;
+id_to_rr_bus_t idp;
+assign idp = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus;
 
-assign rf_raddr1 = db.rj;
-assign rf_raddr2 = db.src_reg_is_rd ? db.rd : db.rk;
+d_bus_t db0;
+d_bus_t db1;
+assign db0 = idp.s0.d_bus;
+assign db1 = idp.s1.d_bus;
 
-// ---- 前递选择 ----
+assign rf_raddr1 = db0.rj;
+assign rf_raddr2 = db0.src_reg_is_rd ? db0.rd : db0.rk;
+assign rf_raddr3 = db1.rj;
+assign rf_raddr4 = db1.src_reg_is_rd ? db1.rd : db1.rk;
+
 function automatic [31:0] forward(
     input [ 4:0] addr,
     input [31:0] raw,
-    input fwd_bus_t ex, input fwd_bus_t wb, input fwd_bus_t cm
+    input fwd_bus_t e1, input fwd_bus_t e0,
+    input fwd_bus_t w1, input fwd_bus_t w0,
+    input fwd_bus_t c1, input fwd_bus_t c0
 );
-    if (ex.valid & ex.rf_we & ~ex.is_ld & (ex.rf_waddr == addr) & (addr != 5'b0))
-        forward = ex.rf_wdata;
-    else if (wb.valid & wb.rf_we & (wb.rf_waddr == addr) & (addr != 5'b0))
-        forward = wb.rf_wdata;
-    else if (cm.valid & cm.rf_we & (cm.rf_waddr == addr) & (addr != 5'b0))
-        forward = cm.rf_wdata;
-    else
-        forward = raw;
+    if      (e1.valid & e1.rf_we & ~e1.is_ld & (e1.rf_waddr == addr) & (addr != 5'b0)) forward = e1.rf_wdata;
+    else if (e0.valid & e0.rf_we & ~e0.is_ld & (e0.rf_waddr == addr) & (addr != 5'b0)) forward = e0.rf_wdata;
+    else if (w1.valid & w1.rf_we &             (w1.rf_waddr == addr) & (addr != 5'b0)) forward = w1.rf_wdata;
+    else if (w0.valid & w0.rf_we &             (w0.rf_waddr == addr) & (addr != 5'b0)) forward = w0.rf_wdata;
+    else if (c1.valid & c1.rf_we &             (c1.rf_waddr == addr) & (addr != 5'b0)) forward = c1.rf_wdata;
+    else if (c0.valid & c0.rf_we &             (c0.rf_waddr == addr) & (addr != 5'b0)) forward = c0.rf_wdata;
+    else                                                                               forward = raw;
 endfunction
 
-wire [31:0] fwd_rj  = forward(rf_raddr1, rf_rdata1, ex_fwd, wb_fwd, cm_fwd);
-wire [31:0] fwd_rkd = forward(rf_raddr2, rf_rdata2, ex_fwd, wb_fwd, cm_fwd);
+wire [31:0] fwd_rj0  = forward(rf_raddr1, rf_rdata1, ex_fwd1, ex_fwd0,
+                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+wire [31:0] fwd_rkd0 = forward(rf_raddr2, rf_rdata2, ex_fwd1, ex_fwd0,
+                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+wire [31:0] fwd_rj1  = forward(rf_raddr3, rf_rdata3, ex_fwd1, ex_fwd0,
+                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+wire [31:0] fwd_rkd1 = forward(rf_raddr4, rf_rdata4, ex_fwd1, ex_fwd0,
+                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
 
-wire [31:0] alu_src1 = db.src1_is_pc  ? pc      : fwd_rj;
-wire [31:0] alu_src2 = db.src2_is_imm ? db.imm  : fwd_rkd;
+function automatic exload_hit(input fwd_bus_t ld, input need, input [4:0] addr);
+    exload_hit = ld.valid & ld.rf_we & ld.is_ld & (ld.rf_waddr != 5'b0) &
+                 need & (ld.rf_waddr == addr);
+endfunction
 
-// ---- load-use 停顿：EX 为加载且写本指令真正用到的源寄存器 ----
-wire load_use = ex_fwd.valid & ex_fwd.rf_we & ex_fwd.is_ld & (ex_fwd.rf_waddr != 5'b0) &
-                ( (db.need_rj  & (ex_fwd.rf_waddr == rf_raddr1)) |
-                  (db.need_rkd & (ex_fwd.rf_waddr == rf_raddr2)) );
+wire lu0 = exload_hit(ex_fwd0, db0.need_rj,  rf_raddr1) |
+           exload_hit(ex_fwd1, db0.need_rj,  rf_raddr1) |
+           exload_hit(ex_fwd0, db0.need_rkd, rf_raddr2) |
+           exload_hit(ex_fwd1, db0.need_rkd, rf_raddr2);
+wire lu1 = exload_hit(ex_fwd0, db1.need_rj,  rf_raddr3) |
+           exload_hit(ex_fwd1, db1.need_rj,  rf_raddr3) |
+           exload_hit(ex_fwd0, db1.need_rkd, rf_raddr4) |
+           exload_hit(ex_fwd1, db1.need_rkd, rf_raddr4);
 
+wire load_use   = lu0 | (idp.v1 & lu1);
 wire rf_ready_go = ~load_use;
 assign RF_allow_in    = ~rf_valid | (rf_ready_go & EX_allow_in);
-assign RF_to_EX_valid =  rf_valid &  rf_ready_go & ~flush; // flush: 分支跳转时 RF 不发出有效信号，阻止错误路径指令进入 EX
+assign RF_to_EX_valid = rf_valid & rf_ready_go & ~flush;
 
 always @(posedge clk) begin
     if (reset)            rf_valid <= 1'b0;
@@ -83,29 +104,33 @@ always @(posedge clk) begin
 end
 
 assign RF_to_EX_BUS = '{
-    pc:            pc,
-    inst:          inst,
-    imm:           db.imm,
-    alu_op:        db.alu_op,
-    alu_src1:      alu_src1,
-    alu_src2:      alu_src2,
-    rkd_value:     fwd_rkd,
-    is_mul:        db.is_mul,
-    is_cpucfg:     db.is_cpucfg,
-    is_branch:     db.is_branch,
-    inst_jirl:     db.inst_jirl,
-    inst_beq:      db.inst_beq,
-    inst_bne:      db.inst_bne,
-    bp_taken:      bp_taken_r,
-    bp_target:     bp_target_r,
-    is_ld:         db.is_ld,
-    is_st:         db.is_st,
-    is_st_b:       db.is_st_b,
-    ld_width:      db.ld_width,
-    ld_ext_signed: db.ld_ext_signed,
-    rf_wdata_sel:  db.rf_wdata_sel,
-    rf_we:         db.rf_we,
-    rf_waddr:      db.rf_waddr
+    s0: '{
+        pc: idp.s0.pc, inst: idp.s0.inst, imm: db0.imm, alu_op: db0.alu_op,
+        alu_src1: db0.src1_is_pc ? idp.s0.pc : fwd_rj0,
+        alu_src2: db0.src2_is_imm ? db0.imm : fwd_rkd0,
+        rkd_value: fwd_rkd0,
+        is_mul: db0.is_mul, is_cpucfg: db0.is_cpucfg,
+        is_branch: db0.is_branch, inst_jirl: db0.inst_jirl,
+        inst_beq: db0.inst_beq, inst_bne: db0.inst_bne,
+        bp_taken: idp.s0.bp_taken, bp_target: idp.s0.bp_target,
+        is_ld: db0.is_ld, is_st: db0.is_st, is_st_b: db0.is_st_b,
+        ld_width: db0.ld_width, ld_ext_signed: db0.ld_ext_signed,
+        rf_wdata_sel: db0.rf_wdata_sel, rf_we: db0.rf_we, rf_waddr: db0.rf_waddr
+    },
+    s1: '{
+        pc: idp.s1.pc, inst: idp.s1.inst, imm: db1.imm, alu_op: db1.alu_op,
+        alu_src1: db1.src1_is_pc ? idp.s1.pc : fwd_rj1,
+        alu_src2: db1.src2_is_imm ? db1.imm : fwd_rkd1,
+        rkd_value: fwd_rkd1,
+        is_mul: db1.is_mul, is_cpucfg: db1.is_cpucfg,
+        is_branch: db1.is_branch, inst_jirl: db1.inst_jirl,
+        inst_beq: db1.inst_beq, inst_bne: db1.inst_bne,
+        bp_taken: idp.s1.bp_taken, bp_target: idp.s1.bp_target,
+        is_ld: db1.is_ld, is_st: db1.is_st, is_st_b: db1.is_st_b,
+        ld_width: db1.ld_width, ld_ext_signed: db1.ld_ext_signed,
+        rf_wdata_sel: db1.rf_wdata_sel, rf_we: db1.rf_we, rf_waddr: db1.rf_waddr
+    },
+    v1: idp.v1
 };
 
 endmodule
