@@ -101,7 +101,7 @@ typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
     logic [31:0] alu_result;   // 计算结果，加载/存储时为访存地址
-    logic [31:0] mem_rdata;    // 原始 data_sram_rdata（组合读，EX 周期锁存）
+    logic        is_mem;       // 请求已被 Cache 接受，WB 等待 data_ok
     logic [ 1:0] addr_lo;      // 访存地址低 2 位（字节/半字选择）
     logic [ 3:0] ld_width;
     logic        ld_ext_signed;
@@ -162,11 +162,12 @@ typedef struct packed {
 } wb_to_cm_bus_t;
 
 // 每个槽各自向 RF 广播一份前递信息。年轻槽优先级高于年长槽。
-// EX 的数据对加载指令无效（数据尚在访存通路上），用 is_ld 标记触发 load-use 停顿。
+// EX 的数据对加载指令无效；WB 等待 data_ok 时，加载数据同样无效。
+// 两级都用 is_ld 标记未就绪的 load，供 RF 触发 load-use 停顿。
 typedef struct packed {
     logic        valid;
     logic        rf_we;
-    logic        is_ld;        // 仅 EX 用；WB/CM 恒 0
+    logic        is_ld;        // EX/WB 可置 1；CM 恒 0
     logic [ 4:0] rf_waddr;
     logic [31:0] rf_wdata;
 } fwd_bus_t;

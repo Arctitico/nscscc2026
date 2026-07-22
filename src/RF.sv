@@ -58,8 +58,8 @@ function automatic [31:0] forward(
 );
     if      (e1.valid & e1.rf_we & ~e1.is_ld & (e1.rf_waddr == addr) & (addr != 5'b0)) forward = e1.rf_wdata;
     else if (e0.valid & e0.rf_we & ~e0.is_ld & (e0.rf_waddr == addr) & (addr != 5'b0)) forward = e0.rf_wdata;
-    else if (w1.valid & w1.rf_we &             (w1.rf_waddr == addr) & (addr != 5'b0)) forward = w1.rf_wdata;
-    else if (w0.valid & w0.rf_we &             (w0.rf_waddr == addr) & (addr != 5'b0)) forward = w0.rf_wdata;
+    else if (w1.valid & w1.rf_we & ~w1.is_ld & (w1.rf_waddr == addr) & (addr != 5'b0)) forward = w1.rf_wdata;
+    else if (w0.valid & w0.rf_we & ~w0.is_ld & (w0.rf_waddr == addr) & (addr != 5'b0)) forward = w0.rf_wdata;
     else if (c1.valid & c1.rf_we &             (c1.rf_waddr == addr) & (addr != 5'b0)) forward = c1.rf_wdata;
     else if (c0.valid & c0.rf_we &             (c0.rf_waddr == addr) & (addr != 5'b0)) forward = c0.rf_wdata;
     else                                                                               forward = raw;
@@ -81,12 +81,20 @@ endfunction
 
 wire lu0 = exload_hit(ex_fwd0, db0.need_rj,  rf_raddr1) |
            exload_hit(ex_fwd1, db0.need_rj,  rf_raddr1) |
+           exload_hit(wb_fwd0, db0.need_rj,  rf_raddr1) |
+           exload_hit(wb_fwd1, db0.need_rj,  rf_raddr1) |
            exload_hit(ex_fwd0, db0.need_rkd, rf_raddr2) |
-           exload_hit(ex_fwd1, db0.need_rkd, rf_raddr2);
+           exload_hit(ex_fwd1, db0.need_rkd, rf_raddr2) |
+           exload_hit(wb_fwd0, db0.need_rkd, rf_raddr2) |
+           exload_hit(wb_fwd1, db0.need_rkd, rf_raddr2);
 wire lu1 = exload_hit(ex_fwd0, db1.need_rj,  rf_raddr3) |
            exload_hit(ex_fwd1, db1.need_rj,  rf_raddr3) |
+           exload_hit(wb_fwd0, db1.need_rj,  rf_raddr3) |
+           exload_hit(wb_fwd1, db1.need_rj,  rf_raddr3) |
            exload_hit(ex_fwd0, db1.need_rkd, rf_raddr4) |
-           exload_hit(ex_fwd1, db1.need_rkd, rf_raddr4);
+           exload_hit(ex_fwd1, db1.need_rkd, rf_raddr4) |
+           exload_hit(wb_fwd0, db1.need_rkd, rf_raddr4) |
+           exload_hit(wb_fwd1, db1.need_rkd, rf_raddr4);
 
 wire load_use   = lu0 | (idp.v1 & lu1);
 wire rf_ready_go = ~load_use;

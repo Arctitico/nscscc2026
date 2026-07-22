@@ -34,8 +34,7 @@ module EX (
     output wire   [ 2:0]    data_sram_size,
     output wire   [31:0]    data_sram_addr,
     output wire   [31:0]    data_sram_wdata,
-    input  wire   [31:0]    data_sram_rdata,
-    input  wire             data_ok,
+    input  wire             data_addr_ok,
 
     output wire             perf_data_wait,
     output wire             perf_mul_wait,
@@ -85,7 +84,6 @@ wire mispred1 = ex_v1 & s1.is_branch &
 // slot0 分支可与非分支 slot1 共发；误预测时必须抹掉更年轻的 slot1。
 wire ex_v1_eff = ex_v1 & ~mispred0;
 
-assign redirect        = mispred0 | mispred1;
 assign redirect_target = mispred0 ? (br_taken0 ? br_target0 : (s0.pc + 32'd4))
                                    : (br_taken1 ? br_target1 : (s1.pc + 32'd4));
 
@@ -125,14 +123,19 @@ wire [31:0] mul_low;
 wire [31:0] mul_high_unused;
 
 wire ex_ready_go   = ex_has_mul       ? mul_out_valid
-                   : (is_mem0 | is_mem1) ? data_ok
+                   : (is_mem0 | is_mem1) ? data_addr_ok
                                          : 1'b1;
 wire ex_slot_allow = ~ex_valid | (ex_ready_go & WB_allow_in);
 assign EX_allow_in = ex_slot_allow &
                      (~RF_to_EX_valid | ~incoming_mul | mul_in_ready);
 assign EX_to_WB_valid = ex_valid & ex_ready_go;
 
-assign perf_data_wait      = ex_valid & (is_mem0 | is_mem1) & ~data_ok;
+// WB 可能正在等待更老的访存响应。分支在 EX 被背压时只保留
+// 解析结果，等本 bundle 真正向 WB 推进时再冲刷，避免每拍重复 redirect。
+wire branch_resolve_fire = ex_ready_go & WB_allow_in;
+assign redirect = (mispred0 | mispred1) & branch_resolve_fire;
+
+assign perf_data_wait      = ex_valid & (is_mem0 | is_mem1) & ~data_addr_ok;
 assign perf_mul_wait       = ex_valid & ex_has_mul & ~mul_out_valid;
 assign perf_branch_mispred = redirect & ex_ready_go & WB_allow_in;
 
@@ -182,11 +185,11 @@ assign bp_upd_target  = upd_sel1 ? br_target1 : br_target0;
 
 assign EX_to_WB_BUS = '{
     s0: '{pc: s0.pc, inst: s0.inst, alu_result: execute_result0,
-          mem_rdata: data_sram_rdata, addr_lo: alu_result0[1:0],
+          is_mem: is_mem0, addr_lo: alu_result0[1:0],
           ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
           rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr},
     s1: '{pc: s1.pc, inst: s1.inst, alu_result: execute_result1,
-          mem_rdata: data_sram_rdata, addr_lo: alu_result1[1:0],
+          is_mem: is_mem1, addr_lo: alu_result1[1:0],
           ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
           rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr},
     v1: ex_v1_eff

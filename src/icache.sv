@@ -58,6 +58,10 @@ reg                  refill_flushed;
 reg                  refill_valid_q;
 reg [31:0]           refill_data_q;
 reg                  refill_last_q;
+reg                  snoop_valid_q;
+reg [31:0]           snoop_addr_q;
+wire [IDX_BITS-1:0]  snoop_idx = snoop_addr_q[OFF +: IDX_BITS];
+wire [TAG_BITS-1:0]  snoop_tag = snoop_addr_q[32-TAG_BITS +: TAG_BITS];
 
 // LRU
 reg [NSETS-1:0]      lru;
@@ -153,6 +157,9 @@ always @(posedge clk) begin
     if (reset)                            refill_flushed <= 1'b0;
     else if (in_lookup & ~hit & ~flush)   refill_flushed <= 1'b0;
     else if ((state==S_REQ | state==S_FILL) & flush) refill_flushed <= 1'b1;
+    else if ((state==S_REQ | state==S_FILL) & snoop_valid_q &
+             (snoop_addr_q[31:OFF] == {req_tag, req_idx}))
+        refill_flushed <= 1'b1;
 end
 
 // LRU 只在有效行参与替换，复位后由 valid0/valid1 屏蔽其旧值。
@@ -181,11 +188,6 @@ reg [NSETS-1:0] valid0, valid1;
 // 数据写地址来自 EX 的组合 ALU。先登记一拍再查 tag/清 valid，避免把
 // 第二槽地址计算直接接到 I-cache 分布式 RAM 的写端；连续写仍逐拍捕获。
 // 本核没有 fence.i，测试监控程序在写完代码后才跳转，延迟一拍不改变可见性。
-reg        snoop_valid_q;
-reg [31:0] snoop_addr_q;
-wire [IDX_BITS-1:0] snoop_idx = snoop_addr_q[OFF +: IDX_BITS];
-wire [TAG_BITS-1:0] snoop_tag = snoop_addr_q[32-TAG_BITS +: TAG_BITS];
-
 always @(posedge clk) begin
     if (reset) snoop_valid_q <= 1'b0;
     else       snoop_valid_q <= snoop_valid;

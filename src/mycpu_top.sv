@@ -19,13 +19,18 @@ module mycpu_top(
     input  wire [31:0] inst_ret_data,
     input  wire        inst_ret_last,
 
-    output wire        data_sram_en,
-    output wire [ 3:0] data_sram_we,
-    output wire [ 2:0] data_sram_size,
-    output wire [31:0] data_sram_addr,
-    output wire [31:0] data_sram_wdata,
-    input  wire [31:0] data_sram_rdata,
-    input  wire        data_ok,
+    output wire        data_rd_req,
+    output wire [ 2:0] data_rd_size,
+    output wire [31:0] data_rd_addr,
+    input  wire [31:0] data_rd_data,
+    input  wire        data_rd_ok,
+
+    output wire        data_wr_req,
+    output wire [ 2:0] data_wr_size,
+    output wire [31:0] data_wr_addr,
+    output wire [ 3:0] data_wr_strb,
+    output wire [31:0] data_wr_data,
+    input  wire        data_wr_ok,
 
     output wire [31:0] debug_wb_pc,
     output wire [31:0] debug_wb_inst,
@@ -39,8 +44,6 @@ module mycpu_top(
     output wire [31:0] debug_wb1_rf_wdata
 );
 
-// resetn 由板级 rst_sync 保证异步拉低、同步释放；CPU 内部统一使用
-// 高有效同步复位，不再额外打一拍，避免 CPU 与 AXI bridge 复位错位。
 wire reset = ~resetn;
 
 wire IF_to_ID_valid;
@@ -99,6 +102,17 @@ wire [31:0] ic_addr;
 wire        ic_addr_ok;
 wire        ic_data_ok;
 wire [31:0] ic_rdata_lo, ic_rdata_hi;
+wire        ic_mem_rd_req;
+
+wire        ex_data_sram_en;
+wire [ 3:0] ex_data_sram_we;
+wire [ 2:0] ex_data_sram_size;
+wire [31:0] ex_data_sram_addr;
+wire [31:0] ex_data_sram_wdata;
+wire [31:0] ex_data_sram_rdata;
+wire        ex_data_addr_ok;
+wire        ex_data_ok;
+wire        dcache_inst_safe;
 
 wire perf_coissue_event;
 wire perf_split_total_event;
@@ -107,7 +121,12 @@ wire perf_split_mem_event;
 wire perf_split_mul_event;
 wire perf_split_branch_event;
 wire perf_icache_miss_event;
-wire perf_data_wait_event;
+wire perf_dcache_hit_event;
+wire perf_dcache_miss_event;
+wire perf_wb_stall_event;
+wire perf_ex_addr_wait_event;
+wire perf_wb_data_wait_event;
+wire perf_data_wait_event = perf_ex_addr_wait_event | perf_wb_data_wait_event;
 wire perf_mul_wait_event;
 wire perf_branch_mispred_event;
 
@@ -233,15 +252,14 @@ EX u_EX (
     .bp_upd_target  (bp_upd_target  ),
     .ex_fwd0        (ex_fwd0        ),
     .ex_fwd1        (ex_fwd1        ),
-    .data_sram_en   (data_sram_en   ),
-    .data_sram_we   (data_sram_we   ),
-    .data_sram_size (data_sram_size ),
-    .data_sram_addr (data_sram_addr ),
-    .data_sram_wdata(data_sram_wdata),
-    .data_sram_rdata(data_sram_rdata),
-    .data_ok        (data_ok        ),
+    .data_sram_en   (ex_data_sram_en   ),
+    .data_sram_we   (ex_data_sram_we   ),
+    .data_sram_size (ex_data_sram_size ),
+    .data_sram_addr (ex_data_sram_addr ),
+    .data_sram_wdata(ex_data_sram_wdata),
+    .data_addr_ok   (ex_data_addr_ok     ),
 
-    .perf_data_wait      (perf_data_wait_event      ),
+    .perf_data_wait      (perf_ex_addr_wait_event   ),
     .perf_mul_wait       (perf_mul_wait_event       ),
     .perf_branch_mispred (perf_branch_mispred_event )
 );
@@ -255,8 +273,11 @@ WB u_WB (
     .WB_to_CM_valid(WB_to_CM_valid),
     .EX_to_WB_BUS  (EX_to_WB_BUS  ),
     .WB_to_CM_BUS  (WB_to_CM_BUS  ),
+    .data_sram_rdata(ex_data_sram_rdata),
+    .data_ok       (ex_data_ok        ),
     .wb_fwd0       (wb_fwd0       ),
-    .wb_fwd1       (wb_fwd1       )
+    .wb_fwd1       (wb_fwd1       ),
+    .perf_data_wait(perf_wb_data_wait_event)
 );
 
 CM u_CM (
@@ -313,28 +334,60 @@ bpu u_bpu (
     .upd_target   (bp_upd_target )
 );
 
+// ============================ 数据缓存 ============================
+dcache u_dcache (
+    .clk          (clk                   ),
+    .reset        (reset                 ),
+    .cpu_req      (ex_data_sram_en       ),
+    .cpu_we       (ex_data_sram_we       ),
+    .cpu_size     (ex_data_sram_size     ),
+    .cpu_addr     (ex_data_sram_addr     ),
+    .cpu_wdata    (ex_data_sram_wdata    ),
+    .cpu_addr_ok  (ex_data_addr_ok       ),
+    .cpu_rdata    (ex_data_sram_rdata    ),
+    .cpu_data_ok  (ex_data_ok            ),
+    .mem_rd_req   (data_rd_req           ),
+    .mem_rd_size  (data_rd_size          ),
+    .mem_rd_addr  (data_rd_addr          ),
+    .mem_rdata    (data_rd_data          ),
+    .mem_rd_ok    (data_rd_ok            ),
+    .mem_wr_req   (data_wr_req           ),
+    .mem_wr_size  (data_wr_size          ),
+    .mem_wr_addr  (data_wr_addr          ),
+    .mem_wr_strb  (data_wr_strb          ),
+    .mem_wr_data  (data_wr_data          ),
+    .mem_wr_ok    (data_wr_ok            ),
+    .inst_safe    (dcache_inst_safe      ),
+    .perf_hit     (perf_dcache_hit_event ),
+    .perf_miss    (perf_dcache_miss_event),
+    .perf_wb_stall(perf_wb_stall_event   )
+);
+
 // ============================ 指令缓存 ============================
 icache u_icache (
-    .clk            (clk                            ),
-    .reset          (reset                          ),
-    .flush          (flush                          ),
-    .snoop_valid    (data_sram_en & (|data_sram_we) ),
-    .snoop_addr     (data_sram_addr                 ),
-    .req            (ic_req                         ),
-    .addr           (ic_addr                        ),
-    .addr_ok        (ic_addr_ok                     ),
-    .data_ok        (ic_data_ok                     ),
-    .rdata_lo       (ic_rdata_lo                    ),
-    .rdata_hi       (ic_rdata_hi                    ),
-    .inst_rd_req    (inst_rd_req                    ),
-    .inst_rd_addr   (inst_rd_addr                   ),
-    .inst_rd_rdy    (inst_rd_rdy                    ),
-    .inst_ret_valid (inst_ret_valid                 ),
-    .inst_ret_data  (inst_ret_data                  ),
-    .inst_ret_last  (inst_ret_last                  ),
+    .clk            (clk                                    ),
+    .reset          (reset                                  ),
+    .flush          (flush                                  ),
+    .snoop_valid    (ex_data_sram_en & (|ex_data_sram_we)   ),
+    .snoop_addr     (ex_data_sram_addr                      ),
+    .req            (ic_req                                 ),
+    .addr           (ic_addr                                ),
+    .addr_ok        (ic_addr_ok                             ),
+    .data_ok        (ic_data_ok                             ),
+    .rdata_lo       (ic_rdata_lo                            ),
+    .rdata_hi       (ic_rdata_hi                            ),
+    .inst_rd_req    (ic_mem_rd_req                          ),
+    .inst_rd_addr   (inst_rd_addr                           ),
+    .inst_rd_rdy    (inst_rd_rdy & dcache_inst_safe         ),
+    .inst_ret_valid (inst_ret_valid                         ),
+    .inst_ret_data  (inst_ret_data                          ),
+    .inst_ret_last  (inst_ret_last                          ),
 
-    .perf_miss      (perf_icache_miss_event         )
+    .perf_miss      (perf_icache_miss_event                 )
 );
+
+// 写缓冲中的 store 必须先对外可见，随后才能让新的指令 miss 越过它。
+assign inst_rd_req = ic_mem_rd_req & dcache_inst_safe;
 
 // ============================ 动态性能计数器 ============================
 // 仅用于仿真诊断，不进入 FPGA 网表。
@@ -351,6 +404,9 @@ reg [63:0] perf_split_mem;
 reg [63:0] perf_split_mul;
 reg [63:0] perf_split_branch;
 reg [63:0] perf_icache_miss;
+reg [63:0] perf_dcache_hit;
+reg [63:0] perf_dcache_miss;
+reg [63:0] perf_wb_stall;
 reg [63:0] perf_data_wait;
 reg [63:0] perf_mul_wait;
 reg [63:0] perf_branch_mispred;
@@ -368,6 +424,9 @@ always @(posedge clk) begin
         perf_split_mul      <= 64'b0;
         perf_split_branch   <= 64'b0;
         perf_icache_miss    <= 64'b0;
+        perf_dcache_hit     <= 64'b0;
+        perf_dcache_miss    <= 64'b0;
+        perf_wb_stall       <= 64'b0;
         perf_data_wait      <= 64'b0;
         perf_mul_wait       <= 64'b0;
         perf_branch_mispred <= 64'b0;
@@ -386,6 +445,9 @@ always @(posedge clk) begin
         if (perf_split_mul_event)      perf_split_mul      <= perf_split_mul + 64'd1;
         if (perf_split_branch_event)   perf_split_branch   <= perf_split_branch + 64'd1;
         if (perf_icache_miss_event)    perf_icache_miss    <= perf_icache_miss + 64'd1;
+        if (perf_dcache_hit_event)     perf_dcache_hit     <= perf_dcache_hit + 64'd1;
+        if (perf_dcache_miss_event)    perf_dcache_miss    <= perf_dcache_miss + 64'd1;
+        if (perf_wb_stall_event)       perf_wb_stall       <= perf_wb_stall + 64'd1;
         if (perf_data_wait_event)      perf_data_wait      <= perf_data_wait + 64'd1;
         if (perf_mul_wait_event)       perf_mul_wait       <= perf_mul_wait + 64'd1;
         if (perf_branch_mispred_event) perf_branch_mispred <= perf_branch_mispred + 64'd1;

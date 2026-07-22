@@ -14,10 +14,13 @@ module tb;
     wire        inst_rd_rdy, inst_ret_valid, inst_ret_last;
     wire [31:0] inst_ret_data;
 
-    wire        data_sram_en;
-    wire [ 3:0] data_sram_we;
-    wire [31:0] data_sram_addr, data_sram_wdata;
-    wire [31:0] data_sram_rdata;
+    wire        data_rd_req, data_rd_ok;
+    wire [ 2:0] data_rd_size;
+    wire [31:0] data_rd_addr, data_rd_data;
+    wire        data_wr_req, data_wr_ok;
+    wire [ 2:0] data_wr_size;
+    wire [31:0] data_wr_addr, data_wr_data;
+    wire [ 3:0] data_wr_strb;
 
     wire [31:0] debug_wb_pc;
     wire [ 3:0] debug_wb_rf_we;
@@ -33,10 +36,10 @@ module tb;
         .inst_rd_req(inst_rd_req), .inst_rd_addr(inst_rd_addr),
         .inst_rd_rdy(inst_rd_rdy), .inst_ret_valid(inst_ret_valid),
         .inst_ret_data(inst_ret_data), .inst_ret_last(inst_ret_last),
-        .data_sram_en(data_sram_en), .data_sram_we(data_sram_we),
-        .data_sram_size(),
-        .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
-        .data_sram_rdata(data_sram_rdata), .data_ok(1'b1),
+        .data_rd_req(data_rd_req), .data_rd_size(data_rd_size), .data_rd_addr(data_rd_addr),
+        .data_rd_data(data_rd_data), .data_rd_ok(data_rd_ok),
+        .data_wr_req(data_wr_req), .data_wr_size(data_wr_size), .data_wr_addr(data_wr_addr),
+        .data_wr_strb(data_wr_strb), .data_wr_data(data_wr_data), .data_wr_ok(data_wr_ok),
         .debug_wb_pc(debug_wb_pc), .debug_wb_inst(), .debug_wb_rf_we(debug_wb_rf_we),
         .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata),
         .debug_wb1_pc(debug_wb1_pc), .debug_wb1_inst(), .debug_wb1_rf_we(debug_wb1_rf_we),
@@ -55,9 +58,17 @@ module tb;
         is_ext = (addr[31:22] == 10'h071) && (idx(addr) < DEPTH);
     endfunction
 
-    // 数据口：组合读
-    assign data_sram_rdata = is_base(data_sram_addr) ? base_mem[idx(data_sram_addr)] :
-                             is_ext(data_sram_addr)  ? ext_mem[idx(data_sram_addr)]  : 32'h0;
+    // 数据口：size=3'b100 时返回 4-beat cache line，其余为单拍事务。
+    reg        ractive, rline, wactive;
+    reg [ 2:0] rbeat;
+    reg [31:0] rbase;
+    wire [31:0] rbeat_addr = rbase + (rbeat << 2);
+    wire rdaccept = data_rd_req & ~ractive;
+    wire wraccept = data_wr_req & ~wactive;
+    assign data_rd_ok = ractive;
+    assign data_wr_ok = wactive;
+    assign data_rd_data = is_base(rbeat_addr) ? base_mem[idx(rbeat_addr)] :
+                          is_ext(rbeat_addr)  ? ext_mem[idx(rbeat_addr)]  : 32'h0;
 
     // 取指口：行为级突发读模型（接受当拍 rd_rdy，随后逐拍回 IWORDS 个字）
     localparam int IWORDS = 4;
@@ -80,19 +91,41 @@ module tb;
         end
     end
 
-    // 写（时钟沿，按字节使能）
+    // 写在请求接受沿落盘，完成响应下一拍返回。
     always @(posedge clk) begin
-        if (data_sram_en && (|data_sram_we) && is_base(data_sram_addr)) begin
-            if (data_sram_we[0]) base_mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
-            if (data_sram_we[1]) base_mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
-            if (data_sram_we[2]) base_mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
-            if (data_sram_we[3]) base_mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
+        if (!resetn) begin
+            ractive <= 1'b0;
+            wactive <= 1'b0;
+            rbeat   <= 3'd0;
+        end else begin
+            if (rdaccept) begin
+                ractive <= 1'b1;
+                rline   <= (data_rd_size == 3'b100);
+                rbeat   <= 3'd0;
+                rbase   <= data_rd_addr;
+            end else if (ractive) begin
+                if (rline && (rbeat != 3'd3))
+                    rbeat <= rbeat + 3'd1;
+                else
+                    ractive <= 1'b0;
+            end
+            if (wraccept)
+                wactive <= 1'b1;
+            else if (wactive)
+                wactive <= 1'b0;
         end
-        if (data_sram_en && (|data_sram_we) && is_ext(data_sram_addr)) begin
-            if (data_sram_we[0]) ext_mem[idx(data_sram_addr)][ 7: 0] <= data_sram_wdata[ 7: 0];
-            if (data_sram_we[1]) ext_mem[idx(data_sram_addr)][15: 8] <= data_sram_wdata[15: 8];
-            if (data_sram_we[2]) ext_mem[idx(data_sram_addr)][23:16] <= data_sram_wdata[23:16];
-            if (data_sram_we[3]) ext_mem[idx(data_sram_addr)][31:24] <= data_sram_wdata[31:24];
+
+        if (wraccept && is_base(data_wr_addr)) begin
+            if (data_wr_strb[0]) base_mem[idx(data_wr_addr)][ 7: 0] <= data_wr_data[ 7: 0];
+            if (data_wr_strb[1]) base_mem[idx(data_wr_addr)][15: 8] <= data_wr_data[15: 8];
+            if (data_wr_strb[2]) base_mem[idx(data_wr_addr)][23:16] <= data_wr_data[23:16];
+            if (data_wr_strb[3]) base_mem[idx(data_wr_addr)][31:24] <= data_wr_data[31:24];
+        end
+        if (wraccept && is_ext(data_wr_addr)) begin
+            if (data_wr_strb[0]) ext_mem[idx(data_wr_addr)][ 7: 0] <= data_wr_data[ 7: 0];
+            if (data_wr_strb[1]) ext_mem[idx(data_wr_addr)][15: 8] <= data_wr_data[15: 8];
+            if (data_wr_strb[2]) ext_mem[idx(data_wr_addr)][23:16] <= data_wr_data[23:16];
+            if (data_wr_strb[3]) ext_mem[idx(data_wr_addr)][31:24] <= data_wr_data[31:24];
         end
     end
 

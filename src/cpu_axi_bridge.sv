@@ -6,7 +6,9 @@
 //   - one outstanding read transaction (data load has priority over I-cache)
 //   - four-beat INCR burst for a 16-byte I-cache line
 //   - one outstanding single-beat write; AW and W handshake independently
-//   - a load/store completes only on the final R beat / B response
+//   - data read 的每个 R beat 都以 data_ok 返回给 D-cache；普通单拍 load
+//     仍只有一个 beat，size=3'b100 表示 16B cache-line burst
+//   - store 在 B response 时完成
 // ============================================================================
 module cpu_axi_bridge (
     input  wire        clk,
@@ -60,13 +62,18 @@ module cpu_axi_bridge (
     output wire [31:0] inst_ret_data,
     output wire        inst_ret_last,
 
-    input  wire        data_sram_en,
-    input  wire [ 3:0] data_sram_we,
-    input  wire [ 2:0] data_sram_size,
-    input  wire [31:0] data_sram_addr,
-    input  wire [31:0] data_sram_wdata,
-    output wire [31:0] data_sram_rdata,
-    output wire        data_ok
+    input  wire        data_rd_req,
+    input  wire [ 2:0] data_rd_size,
+    input  wire [31:0] data_rd_addr,
+    output wire [31:0] data_rd_data,
+    output wire        data_rd_ok,
+
+    input  wire        data_wr_req,
+    input  wire [ 2:0] data_wr_size,
+    input  wire [31:0] data_wr_addr,
+    input  wire [ 3:0] data_wr_strb,
+    input  wire [31:0] data_wr_data,
+    output wire        data_wr_ok
 );
 
 // ------------------------------ read channel ------------------------------
@@ -80,7 +87,7 @@ reg [31:0] rd_addr;
 reg [ 7:0] rd_len;
 reg [ 2:0] rd_size;
 
-wire data_rd_req = data_sram_en && (data_sram_we == 4'b0000);
+wire data_rd_line = (data_rd_size == 3'b100);
 
 always @(posedge clk) begin
     if (reset) begin
@@ -91,9 +98,9 @@ always @(posedge clk) begin
                 // A stalled load is older than a pending I-cache miss.
                 if (data_rd_req) begin
                     rd_is_data <= 1'b1;
-                    rd_addr    <= data_sram_addr;
-                    rd_len     <= 8'd0;
-                    rd_size    <= data_sram_size;
+                    rd_addr    <= data_rd_addr;
+                    rd_len     <= data_rd_line ? 8'd3 : 8'd0;
+                    rd_size    <= data_rd_line ? 3'b010 : data_rd_size;
                     rd_state   <= RD_ADDR;
                 end else if (inst_rd_req) begin
                     rd_is_data <= 1'b0;
@@ -132,8 +139,9 @@ assign inst_ret_valid = (rd_state == RD_DATA) && !rd_is_data && rvalid;
 assign inst_ret_data  = rdata;
 assign inst_ret_last  = inst_ret_valid && rlast;
 
-wire data_rd_done = (rd_state == RD_DATA) && rd_is_data && rvalid && rready && rlast;
-assign data_sram_rdata = rdata;
+wire data_rd_beat = (rd_state == RD_DATA) && rd_is_data && rvalid && rready;
+assign data_rd_data = rdata;
+assign data_rd_ok   = data_rd_beat;
 
 // ------------------------------ write channel -----------------------------
 localparam [1:0] WR_IDLE = 2'd0;
@@ -148,7 +156,6 @@ reg [ 2:0] wr_size;
 reg [31:0] wr_data;
 reg [ 3:0] wr_strb;
 
-wire data_wr_req = data_sram_en && (data_sram_we != 4'b0000);
 wire aw_fire = awvalid && awready;
 wire w_fire  = wvalid  && wready;
 
@@ -159,10 +166,10 @@ always @(posedge clk) begin
         case (wr_state)
             WR_IDLE: begin
                 if (data_wr_req) begin
-                    wr_addr  <= data_sram_addr;
-                    wr_size  <= data_sram_size;
-                    wr_data  <= data_sram_wdata;
-                    wr_strb  <= data_sram_we;
+                    wr_addr  <= data_wr_addr;
+                    wr_size  <= data_wr_size;
+                    wr_data  <= data_wr_data;
+                    wr_strb  <= data_wr_strb;
                     aw_done  <= 1'b0;
                     w_done   <= 1'b0;
                     wr_state <= WR_SEND;
@@ -201,7 +208,7 @@ assign wvalid = (wr_state == WR_SEND) && !w_done;
 assign bready = (wr_state == WR_RESP);
 
 wire data_wr_done = (wr_state == WR_RESP) && bvalid && bready;
-assign data_ok = data_rd_done || data_wr_done;
+assign data_wr_ok = data_wr_done;
 
 // Response IDs/codes are intentionally not used by this single-outstanding
 // baseline. The official SoC returns OKAY and preserves the issued ID.

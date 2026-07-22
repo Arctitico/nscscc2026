@@ -68,13 +68,17 @@ wire        inst_ret_valid;
 wire [31:0] inst_ret_data;
 wire        inst_ret_last;
 
-wire        data_sram_en;
-wire [ 3:0] data_sram_we;
-wire [ 2:0] data_sram_size;
-wire [31:0] data_sram_addr;
-wire [31:0] data_sram_wdata;
-wire [31:0] data_sram_rdata;
-wire        data_ok;
+wire        data_rd_req;
+wire [ 2:0] data_rd_size;
+wire [31:0] data_rd_addr;
+wire [31:0] data_rd_data;
+wire        data_rd_ok;
+wire        data_wr_req;
+wire [ 2:0] data_wr_size;
+wire [31:0] data_wr_addr;
+wire [ 3:0] data_wr_strb;
+wire [31:0] data_wr_data;
+wire        data_wr_ok;
 
 mycpu_top u_mycpu (
     .clk                (aclk),
@@ -85,13 +89,17 @@ mycpu_top u_mycpu (
     .inst_ret_valid     (inst_ret_valid),
     .inst_ret_data      (inst_ret_data),
     .inst_ret_last      (inst_ret_last),
-    .data_sram_en       (data_sram_en),
-    .data_sram_we       (data_sram_we),
-    .data_sram_size     (data_sram_size),
-    .data_sram_addr     (data_sram_addr),
-    .data_sram_wdata    (data_sram_wdata),
-    .data_sram_rdata    (data_sram_rdata),
-    .data_ok            (data_ok),
+    .data_rd_req        (data_rd_req),
+    .data_rd_size       (data_rd_size),
+    .data_rd_addr       (data_rd_addr),
+    .data_rd_data       (data_rd_data),
+    .data_rd_ok         (data_rd_ok),
+    .data_wr_req        (data_wr_req),
+    .data_wr_size       (data_wr_size),
+    .data_wr_addr       (data_wr_addr),
+    .data_wr_strb       (data_wr_strb),
+    .data_wr_data       (data_wr_data),
+    .data_wr_ok         (data_wr_ok),
     .debug_wb_pc        (debug0_wb_pc),
     .debug_wb_inst      (debug0_wb_inst),
     .debug_wb_rf_we     (debug0_wb_rf_wen),
@@ -117,9 +125,10 @@ cpu_axi_bridge u_axi_bridge (
     .bid(bid), .bresp(bresp), .bvalid(bvalid), .bready(bready),
     .inst_rd_req(inst_rd_req), .inst_rd_addr(inst_rd_addr), .inst_rd_rdy(inst_rd_rdy),
     .inst_ret_valid(inst_ret_valid), .inst_ret_data(inst_ret_data), .inst_ret_last(inst_ret_last),
-    .data_sram_en(data_sram_en), .data_sram_we(data_sram_we), .data_sram_size(data_sram_size),
-    .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
-    .data_sram_rdata(data_sram_rdata), .data_ok(data_ok)
+    .data_rd_req(data_rd_req), .data_rd_size(data_rd_size), .data_rd_addr(data_rd_addr),
+    .data_rd_data(data_rd_data), .data_rd_ok(data_rd_ok),
+    .data_wr_req(data_wr_req), .data_wr_size(data_wr_size), .data_wr_addr(data_wr_addr),
+    .data_wr_strb(data_wr_strb), .data_wr_data(data_wr_data), .data_wr_ok(data_wr_ok)
 );
 
 // These historical debug/interrupt inputs are not required by the 2026
