@@ -34,8 +34,9 @@ module mycpu_top(
     output wire [31:0] debug_wb_rf_wdata
 );
 
-reg reset;
-always @(posedge clk) reset <= ~resetn;
+// resetn 由板级 rst_sync 保证异步拉低、同步释放；CPU 内部统一使用
+// 高有效同步复位，不再额外打一拍，避免 CPU 与 AXI bridge 复位错位。
+wire reset = ~resetn;
 
 wire IF_to_ID_valid;
 wire ID_to_RR_valid;

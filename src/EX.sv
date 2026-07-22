@@ -58,14 +58,15 @@ assign EX_allow_in    = ex_slot_allow &
                         (~RF_to_EX_valid | ~RF_to_EX_BUS.is_mul | mul_in_ready);
 assign EX_to_WB_valid =  ex_valid &  ex_ready_go;
 
-always @(posedge clk or posedge reset) begin
+// eb 只是由 ex_valid 限定有效性的流水载荷，无效时保留旧值即可。
+// 控制寄存器使用同步复位，避免异步复位路径进入 I-cache BRAM 地址逻辑。
+always @(posedge clk) begin
     if (reset)            ex_valid <= 1'b0;
     else if (EX_allow_in) ex_valid <= RF_to_EX_valid;
 end
 
-always @(posedge clk or posedge reset) begin
-    if (reset)                             eb <= '0;
-    else if (RF_to_EX_valid & EX_allow_in) eb <= RF_to_EX_BUS;
+always @(posedge clk) begin
+    if (RF_to_EX_valid & EX_allow_in) eb <= RF_to_EX_BUS;
 end
 
 wire [31:0] alu_result;

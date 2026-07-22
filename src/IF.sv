@@ -103,8 +103,7 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (reset) inst_f2 <= 32'b0;
-    else if (data_here & ~f2_fire) inst_f2 <= ic_rdata;
+    if (data_here & ~f2_fire) inst_f2 <= ic_rdata;
 end
 
 endmodule

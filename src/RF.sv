@@ -72,15 +72,14 @@ wire rf_ready_go = ~load_use;
 assign RF_allow_in    = ~rf_valid | (rf_ready_go & EX_allow_in);
 assign RF_to_EX_valid =  rf_valid &  rf_ready_go & ~flush; // flush: 分支跳转时 RF 不发出有效信号，阻止错误路径指令进入 EX
 
-always @(posedge clk or posedge reset) begin
+always @(posedge clk) begin
     if (reset)            rf_valid <= 1'b0;
     else if (flush)       rf_valid <= 1'b0;
     else if (RF_allow_in) rf_valid <= IS_to_RF_valid;
 end
 
-always @(posedge clk or posedge reset) begin
-    if (reset)                             rf_bus_r <= '0;
-    else if (IS_to_RF_valid & RF_allow_in) rf_bus_r <= IS_to_RF_BUS;
+always @(posedge clk) begin
+    if (IS_to_RF_valid & RF_allow_in) rf_bus_r <= IS_to_RF_BUS;
 end
 
 assign RF_to_EX_BUS = '{

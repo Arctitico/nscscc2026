@@ -28,15 +28,14 @@ wire rr_ready_go = 1'b1;
 assign RR_allow_in    = ~rr_valid | (rr_ready_go & DP_allow_in);
 assign RR_to_DP_valid =  rr_valid &  rr_ready_go;
 
-always @(posedge clk or posedge reset) begin
+always @(posedge clk) begin
     if (reset)            rr_valid <= 1'b0;
     else if (flush)       rr_valid <= 1'b0;
     else if (RR_allow_in) rr_valid <= ID_to_RR_valid;
 end
 
-always @(posedge clk or posedge reset) begin
-    if (reset)                             rr_bus_r <= '0;
-    else if (ID_to_RR_valid & RR_allow_in) rr_bus_r <= ID_to_RR_BUS;
+always @(posedge clk) begin
+    if (ID_to_RR_valid & RR_allow_in) rr_bus_r <= ID_to_RR_BUS;
 end
 
 assign RR_to_DP_BUS = '{id_to_rr_bus: rr_bus_r};

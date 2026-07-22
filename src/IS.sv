@@ -27,15 +27,14 @@ wire is_ready_go = 1'b1;
 assign IS_allow_in    = ~is_valid | (is_ready_go & RF_allow_in);
 assign IS_to_RF_valid =  is_valid &  is_ready_go;
 
-always @(posedge clk or posedge reset) begin
+always @(posedge clk) begin
     if (reset)            is_valid <= 1'b0;
     else if (flush)       is_valid <= 1'b0;
     else if (IS_allow_in) is_valid <= DP_to_IS_valid;
 end
 
-always @(posedge clk or posedge reset) begin
-    if (reset)                             is_bus_r <= '0;
-    else if (DP_to_IS_valid & IS_allow_in) is_bus_r <= DP_to_IS_BUS;
+always @(posedge clk) begin
+    if (DP_to_IS_valid & IS_allow_in) is_bus_r <= DP_to_IS_BUS;
 end
 
 assign IS_to_RF_BUS = '{dp_to_is_bus: is_bus_r};

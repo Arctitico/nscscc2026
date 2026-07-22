@@ -38,7 +38,7 @@ assign out_valid = stage_p_valid;
 assign c_low     = product_p_r[31:0];
 assign c_high    = product_p_r[63:32];
 
-always @(posedge clk or posedge reset) begin
+always @(posedge clk) begin
     if (reset) begin
         stage_a_valid <= 1'b0;
         stage_m_valid <= 1'b0;

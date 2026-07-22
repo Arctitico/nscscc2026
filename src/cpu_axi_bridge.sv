@@ -84,11 +84,7 @@ wire data_rd_req = data_sram_en && (data_sram_we == 4'b0000);
 
 always @(posedge clk) begin
     if (reset) begin
-        rd_state   <= RD_IDLE;
-        rd_is_data <= 1'b0;
-        rd_addr    <= 32'b0;
-        rd_len     <= 8'b0;
-        rd_size    <= 3'b010;
+        rd_state <= RD_IDLE;
     end else begin
         case (rd_state)
             RD_IDLE: begin
@@ -159,12 +155,6 @@ wire w_fire  = wvalid  && wready;
 always @(posedge clk) begin
     if (reset) begin
         wr_state <= WR_IDLE;
-        aw_done  <= 1'b0;
-        w_done   <= 1'b0;
-        wr_addr  <= 32'b0;
-        wr_size  <= 3'b010;
-        wr_data  <= 32'b0;
-        wr_strb  <= 4'b0;
     end else begin
         case (wr_state)
             WR_IDLE: begin

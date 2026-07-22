@@ -24,15 +24,14 @@ wire id_ready_go = 1'b1;
 assign ID_allow_in    = ~id_valid | (id_ready_go & RR_allow_in);
 assign ID_to_RR_valid =  id_valid &  id_ready_go;
 
-always @(posedge clk or posedge reset) begin
+always @(posedge clk) begin
     if (reset)            id_valid <= 1'b0;
     else if (flush)       id_valid <= 1'b0;
     else if (ID_allow_in) id_valid <= IF_to_ID_valid;
 end
 
-always @(posedge clk or posedge reset) begin
-    if (reset)                             id_bus_r <= '0;
-    else if (IF_to_ID_valid & ID_allow_in) id_bus_r <= IF_to_ID_BUS;
+always @(posedge clk) begin
+    if (IF_to_ID_valid & ID_allow_in) id_bus_r <= IF_to_ID_BUS;
 end
 
 d_bus_t d_bus;

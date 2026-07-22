@@ -51,6 +51,9 @@ reg [WORD_BITS-1:0]  req_word;
 reg                  rfl_way;
 reg [WORD_BITS-1:0]  rfl_cnt;
 reg                  refill_flushed;
+reg                  refill_valid_q;
+reg [31:0]           refill_data_q;
+reg                  refill_last_q;
 
 // LRU
 reg [NSETS-1:0]      lru;
@@ -67,8 +70,10 @@ wire hit  = in_lookup & (hit0 | hit1);
 // 接受一次新请求
 wire accept = req & ~flush & ( (state==S_IDLE) | (in_lookup & hit) );
 
-// 本拍读 RAM 的地址：接受新地址, 用入参; 否则（RELOOKUP）用缓冲 req
-wire                  use_in   = accept;
+// 本拍读 RAM 的地址只由 cache 自身的同步状态决定。空闲或命中时预读入参
+// 地址；若本拍没有真正 accept，读出的数据会被状态/valid 丢弃。这样避免
+// 将整条流水线的 allow-in/flush 组合链直接接到 BRAM 地址选择端。
+wire                  use_in   = (state == S_IDLE) | (in_lookup & hit);
 wire [IDX_BITS-1:0]   rd_idx   = use_in ? in_idx   : req_idx;
 wire [DADDR_BITS-1:0] rd_daddr = use_in ? in_daddr : {req_idx, req_word};
 
@@ -81,8 +86,20 @@ assign rdata   = hit0 ? data0_q : data1_q;
 assign inst_rd_req  = (state == S_REQ);
 assign inst_rd_addr = {req_tag, req_idx, {OFF{1'b0}}};
 
-wire refill_word = (state==S_FILL) & inst_ret_valid;
-wire refill_last = refill_word & inst_ret_last;
+// AXI CDC 的返回 valid 带异步复位，先在 CPU 时钟域登记一拍，再用于控制
+// BRAM 写入。数据和 last 同步登记，连续返回时仍可保持每拍一个 beat。
+always @(posedge clk) begin
+    if (reset) refill_valid_q <= 1'b0;
+    else       refill_valid_q <= inst_ret_valid;
+
+    if (inst_ret_valid) begin
+        refill_data_q <= inst_ret_data;
+        refill_last_q <= inst_ret_last;
+    end
+end
+
+wire refill_word = (state==S_FILL) & refill_valid_q;
+wire refill_last = refill_word & refill_last_q;
 
 // 状态机
 always @(posedge clk) begin
@@ -117,10 +134,7 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (reset) begin
-        rfl_way <= 1'b0;
-        rfl_cnt <= '0;
-    end else if (in_lookup & ~hit & ~flush) begin
+    if (in_lookup & ~hit & ~flush) begin
         rfl_way <= victim_way;
         rfl_cnt <= '0;
     end else if (refill_word) begin
@@ -135,11 +149,9 @@ always @(posedge clk) begin
     else if ((state==S_REQ | state==S_FILL) & flush) refill_flushed <= 1'b1;
 end
 
-// LRU
+// LRU 只在有效行参与替换，复位后由 valid0/valid1 屏蔽其旧值。
 always @(posedge clk) begin
-    if (reset)
-        lru <= '0;
-    else if (refill_last)
+    if (refill_last)
         lru[req_idx] <= ~rfl_way;
     else if (in_lookup & hit)
         lru[req_idx] <= ~hit1;
@@ -170,7 +182,7 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (we0) data0_mem[{req_idx, rfl_cnt}] <= inst_ret_data;
+    if (we0) data0_mem[{req_idx, rfl_cnt}] <= refill_data_q;
     else     data0_q                       <= data0_mem[rd_daddr];
 end
 
@@ -180,7 +192,7 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (we1) data1_mem[{req_idx, rfl_cnt}] <= inst_ret_data;
+    if (we1) data1_mem[{req_idx, rfl_cnt}] <= refill_data_q;
     else     data1_q                       <= data1_mem[rd_daddr];
 end
 

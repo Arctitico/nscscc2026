@@ -25,14 +25,13 @@ wire wb_ready_go = 1'b1;
 assign WB_allow_in    = ~wb_valid | (wb_ready_go & CM_allow_in);
 assign WB_to_CM_valid =  wb_valid &  wb_ready_go;
 
-always @(posedge clk or posedge reset) begin
+always @(posedge clk) begin
     if (reset)            wb_valid <= 1'b0;
     else if (WB_allow_in) wb_valid <= EX_to_WB_valid;
 end
 
-always @(posedge clk or posedge reset) begin
-    if (reset)                             wb_r <= '0;
-    else if (EX_to_WB_valid & WB_allow_in) wb_r <= EX_to_WB_BUS;
+always @(posedge clk) begin
+    if (EX_to_WB_valid & WB_allow_in) wb_r <= EX_to_WB_BUS;
 end
 
 wire [ 7:0] byte_sel = (wb_r.addr_lo == 2'b00) ? wb_r.mem_rdata[ 7: 0] :

@@ -49,8 +49,7 @@ wire [1:0] cnt_cur  = btb_cnt[u_idx];
 wire [1:0] cnt_next = upd_taken ? (cnt_cur == 2'b11 ? 2'b11 : cnt_cur + 2'b01)
                                 : (cnt_cur == 2'b00 ? 2'b00 : cnt_cur - 2'b01);
 
-integer i;
-always @(posedge clk or posedge reset) begin
+always @(posedge clk) begin
     if (reset) begin
         btb_valid <= '0;
     end
