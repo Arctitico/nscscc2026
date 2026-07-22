@@ -40,9 +40,22 @@ module EX (
 reg            ex_valid;
 rf_to_ex_bus_t eb;
 
-wire is_mem      = eb.is_ld | eb.is_st;
-wire ex_ready_go = ~(ex_valid & is_mem) | data_ok;
-assign EX_allow_in    = ~ex_valid | (ex_ready_go & WB_allow_in);
+wire is_mem = eb.is_ld | eb.is_st;
+
+wire        mul_in_valid;
+wire        mul_in_ready;
+wire        mul_out_valid;
+wire        mul_out_ready;
+wire [31:0] mul_low;
+wire [31:0] mul_high_unused;
+
+wire ex_ready_go = eb.is_mul ? mul_out_valid :
+                   is_mem    ? data_ok       : 1'b1;
+wire ex_slot_allow = ~ex_valid | (ex_ready_go & WB_allow_in);
+
+// 新乘法指令只有在乘法流水线能接收时才能进入 EX；其它指令不受影响。
+assign EX_allow_in    = ex_slot_allow &
+                        (~RF_to_EX_valid | ~RF_to_EX_BUS.is_mul | mul_in_ready);
 assign EX_to_WB_valid =  ex_valid &  ex_ready_go;
 
 always @(posedge clk or posedge reset) begin
@@ -63,14 +76,21 @@ alu u_alu(
     .alu_result (alu_result )
 );
 
-wire [31:0] mul_low;
-wire [31:0] mul_high_unused;
+assign mul_in_valid  = RF_to_EX_valid & EX_allow_in & RF_to_EX_BUS.is_mul;
+assign mul_out_ready = ex_valid & eb.is_mul & WB_allow_in;
+
 mul u_mul (
-    .a_in      (eb.alu_src1),
-    .b_in      (eb.alu_src2),
-    .is_signed (1'b1       ),
-    .c_low     (mul_low    ),
-    .c_high    (mul_high_unused)
+    .clk        (clk                         ),
+    .reset      (reset                       ),
+    .in_valid   (mul_in_valid                ),
+    .in_ready   (mul_in_ready                ),
+    .a_in       (RF_to_EX_BUS.alu_src1       ),
+    .b_in       (RF_to_EX_BUS.alu_src2       ),
+    .is_signed  (1'b1                        ),
+    .out_valid  (mul_out_valid               ),
+    .out_ready  (mul_out_ready               ),
+    .c_low      (mul_low                     ),
+    .c_high     (mul_high_unused             )
 );
 
 // 无 Cache baseline 只需要让默认 supervisor 识别“没有 I/D Cache”。
@@ -131,7 +151,7 @@ assign EX_to_WB_BUS = '{
 
 wire [31:0] ex_fwd_data = (eb.rf_wdata_sel == 2'b10) ? (eb.pc + 32'd4) : execute_result;
 assign ex_fwd = '{
-    valid:    ex_valid,
+    valid:    ex_valid & (~eb.is_mul | mul_out_valid),
     rf_we:    eb.rf_we,
     is_ld:    eb.is_ld,
     rf_waddr: eb.rf_waddr,
