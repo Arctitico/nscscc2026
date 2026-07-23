@@ -2,8 +2,9 @@
 // IS —— 8 项整数发射队列
 //
 // 纯 ALU 指令按物理源 tag 的 ready 状态唤醒，并可越过未就绪的更老纯
-// ALU，最多选择两条送往 RF。分支、乘法、访存和 cpucfg 作为保守屏障：
-// 它们只在成为队列最老项且源已就绪时单发，年轻纯 ALU 不越过屏障。
+// ALU，最多选择两条送往 RF。分支、乘法、访存和 cpucfg 作为顺序屏障：
+// 它们只在成为队列最老项且源已就绪时发射；除 cpucfg 外可携带屏障后、
+// 下一屏障前的一条独立纯 ALU，年轻纯 ALU 不单独越过屏障。
 //
 // 队列与 RF 之间使用一项 skid/hold：RF 可接收时选择结果直接进入 RF，
 // 背压时才登记并保持载荷。IS_allow_in 仍只由已登记的 IQ 占用数决定，
@@ -156,18 +157,20 @@ always_comb begin
         end
     end
 
-    // 最老项若是保守操作，先按单发选择；分支/乘法可再带独立 ALU。
+    // 最老项若是顺序屏障，先选择它；分支/乘法/单访存可再带独立 ALU。
     if (oldest_found && !iq_pure_alu[oldest_idx]) begin
         if (iq_ready[oldest_idx]) begin
             select_mask[oldest_idx] = 1'b1;
             select_idx0             = oldest_idx;
             select_count            = 2'd1;
 
-            // 恢复旧后端已经验证过的安全配对：最老分支或乘法可携带
-            // 一条独立年轻 ALU。访存/cpucfg 仍单发；候选不越过下一
-            // 个保守屏障。分支误预测时 EX 会杀掉 slot1。
+            // 恢复旧后端已经验证过的安全配对：最老分支、乘法或单访存
+            // 可携带一条独立年轻 ALU。候选不越过下一个顺序屏障；
+            // 分支误预测时 EX 会杀掉 slot1。cpucfg 仍保持单发。
             if (iq_entry[oldest_idx].id.d_bus.is_branch |
-                iq_entry[oldest_idx].id.d_bus.is_mul) begin
+                iq_entry[oldest_idx].id.d_bus.is_mul |
+                iq_entry[oldest_idx].id.d_bus.is_ld |
+                iq_entry[oldest_idx].id.d_bus.is_st) begin
                 for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
                     if (iq_valid[k] && !iq_pure_alu[k] &&
                         ({1'b0, iq_dist[k]} > oldest_dist) &&

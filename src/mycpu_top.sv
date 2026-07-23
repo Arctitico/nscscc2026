@@ -55,6 +55,10 @@ wire IS_to_RF_valid;
 wire RF_to_EX_valid;
 wire EX_to_WB_valid;
 wire WB_to_ROB_valid;
+wire EX_fast_complete_valid;
+wire EX_fast_complete_ready;
+wire fast_pending_pop;
+wire complete_valid;
 wire ROB_to_CM_valid;
 
 wire ID_allow_in;
@@ -74,6 +78,9 @@ is_to_rf_bus_t IS_to_RF_BUS;
 rf_to_ex_bus_t RF_to_EX_BUS;
 ex_to_wb_bus_t EX_to_WB_BUS;
 wb_to_cm_bus_t WB_to_ROB_BUS;
+wb_to_cm_bus_t EX_fast_complete_BUS;
+wb_to_cm_bus_t fast_pending_BUS;
+wb_to_cm_bus_t complete_BUS;
 wb_to_cm_bus_t ROB_to_CM_BUS;
 
 wire [31:0] bp_pc0;
@@ -92,6 +99,7 @@ wire        bp_upd_is_cond;
 wire [31:0] bp_upd_target;
 
 fwd_bus_t ex_fwd0, ex_fwd1;
+fwd_bus_t fast_pending_fwd0, fast_pending_fwd1;
 fwd_bus_t wb_fwd0, wb_fwd1;
 fwd_bus_t cm_fwd0, cm_fwd1;
 
@@ -233,8 +241,8 @@ IS u_IS (
     .rename_alloc_fire (rob_alloc_fire          ),
     .rename_alloc_v1   (rob_alloc_v1            ),
     .rename_alloc_bus  (rob_alloc_bus           ),
-    .complete_valid    (WB_to_ROB_valid         ),
-    .complete_bus      (WB_to_ROB_BUS           ),
+    .complete_valid    (complete_valid          ),
+    .complete_bus      (complete_BUS            ),
     .ex_wakeup0        (ex_fwd0                 ),
     .ex_wakeup1        (ex_fwd1                 ),
 
@@ -268,6 +276,8 @@ RF u_RF (
     .rf_rdata4     (rf_rdata4     ),
     .ex_fwd0       (ex_fwd0       ),
     .ex_fwd1       (ex_fwd1       ),
+    .pending_fwd0  (fast_pending_fwd0),
+    .pending_fwd1  (fast_pending_fwd1),
     .wb_fwd0       (wb_fwd0       ),
     .wb_fwd1       (wb_fwd1       ),
     .cm_fwd0       (cm_fwd0       ),
@@ -279,10 +289,13 @@ EX u_EX (
     .reset          (reset              ),
     .RF_to_EX_valid (RF_to_EX_valid     ),
     .WB_allow_in    (WB_allow_in        ),
+    .fast_complete_ready(EX_fast_complete_ready),
     .EX_allow_in    (EX_allow_in        ),
     .EX_to_WB_valid (EX_to_WB_valid     ),
+    .fast_complete_valid(EX_fast_complete_valid),
     .RF_to_EX_BUS   (RF_to_EX_BUS       ),
     .EX_to_WB_BUS   (EX_to_WB_BUS       ),
+    .fast_complete_bus(EX_fast_complete_BUS),
     .redirect       (redirect           ),
     .redirect_target(redirect_target    ),
     .redirect_rob_idx(redirect_rob_idx  ),
@@ -333,8 +346,8 @@ rob u_rob (
     .alloc_idx0       (rob_alloc_idx0),
     .alloc_idx1       (rob_alloc_idx1),
     .head_idx         (rob_head_idx),
-    .complete_valid   (WB_to_ROB_valid),
-    .complete_bus     (WB_to_ROB_BUS),
+    .complete_valid   (complete_valid),
+    .complete_bus     (complete_BUS),
     .recover_valid    (redirect),
     .recover_idx      (redirect_rob_idx),
     .recover_rat      (recover_rat),
@@ -370,15 +383,60 @@ CM u_CM (
     .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
 );
 
-// PRF 在完成时写入，ROB 只控制架构提交。这样结果离开 WB 后仍可由后续
-// 指令从 PRF 读取，不依赖额外的 ROB->RF 旁路。
-assign rf_we1    = {4{WB_to_ROB_valid & WB_to_ROB_BUS.s0.rf_we}};
-assign rf_waddr1 = WB_to_ROB_BUS.s0.pdst;
-assign rf_wdata1 = WB_to_ROB_BUS.s0.rf_wdata;
-assign rf_we2    = {4{WB_to_ROB_valid & WB_to_ROB_BUS.v1 &
-                      WB_to_ROB_BUS.s1.rf_we}};
-assign rf_waddr2 = WB_to_ROB_BUS.s1.pdst;
-assign rf_wdata2 = WB_to_ROB_BUS.s1.rf_wdata;
+// load/store 仍经 blocking WB；非访存从 EX 独立完成。单项 pending
+// buffer 吸收“load 返回与 ALU 完成同拍”的冲突：load 先写 ROB，ALU
+// bundle 下一拍完成，同时允许 EX 以 pop+refill 方式继续前进。
+reg fast_pending_valid;
+
+assign fast_pending_pop = fast_pending_valid & ~WB_to_ROB_valid;
+assign EX_fast_complete_ready = ~fast_pending_valid |
+                                fast_pending_pop;
+assign complete_valid = WB_to_ROB_valid |
+                        fast_pending_valid |
+                        EX_fast_complete_valid;
+assign complete_BUS = WB_to_ROB_valid ? WB_to_ROB_BUS
+                    : fast_pending_valid ? fast_pending_BUS
+                                         : EX_fast_complete_BUS;
+assign fast_pending_fwd0 = '{
+    valid: fast_pending_valid,
+    rf_we: fast_pending_BUS.s0.rf_we,
+    is_ld: 1'b0,
+    pdst: fast_pending_BUS.s0.pdst,
+    rf_wdata: fast_pending_BUS.s0.rf_wdata
+};
+assign fast_pending_fwd1 = '{
+    valid: fast_pending_valid & fast_pending_BUS.v1,
+    rf_we: fast_pending_BUS.s1.rf_we,
+    is_ld: 1'b0,
+    pdst: fast_pending_BUS.s1.pdst,
+    rf_wdata: fast_pending_BUS.s1.rf_wdata
+};
+
+always_ff @(posedge clk) begin
+    if (reset) begin
+        fast_pending_valid <= 1'b0;
+    end else begin
+        if (fast_pending_valid) begin
+            if (fast_pending_pop) begin
+                fast_pending_valid <= EX_fast_complete_valid;
+                if (EX_fast_complete_valid)
+                    fast_pending_BUS <= EX_fast_complete_BUS;
+            end
+        end else if (WB_to_ROB_valid & EX_fast_complete_valid) begin
+            fast_pending_valid <= 1'b1;
+            fast_pending_BUS   <= EX_fast_complete_BUS;
+        end
+    end
+end
+
+// PRF 在完成时写入，ROB 只控制架构提交。
+assign rf_we1    = {4{complete_valid & complete_BUS.s0.rf_we}};
+assign rf_waddr1 = complete_BUS.s0.pdst;
+assign rf_wdata1 = complete_BUS.s0.rf_wdata;
+assign rf_we2    = {4{complete_valid & complete_BUS.v1 &
+                      complete_BUS.s1.rf_we}};
+assign rf_waddr2 = complete_BUS.s1.pdst;
+assign rf_wdata2 = complete_BUS.s1.rf_wdata;
 
 // ============================ 寄存器堆 ============================
 regfile u_regfile (

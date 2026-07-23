@@ -11,11 +11,14 @@ module EX (
 
     input  wire             RF_to_EX_valid,
     input  wire             WB_allow_in,
+    input  wire             fast_complete_ready,
     output wire             EX_allow_in,
     output wire             EX_to_WB_valid,
+    output wire             fast_complete_valid,
 
     input  rf_to_ex_bus_t   RF_to_EX_BUS,
     output ex_to_wb_bus_t   EX_to_WB_BUS,
+    output wb_to_cm_bus_t   fast_complete_bus,
 
     output wire             redirect,
     output wire   [31:0]    redirect_target,
@@ -121,25 +124,28 @@ wire        mul_out_ready;
 wire [31:0] mul_low;
 wire [31:0] mul_high_unused;
 
+wire ex_has_mem    = is_mem0 | is_mem1;
 wire ex_ready_go   = ex_has_mul       ? mul_out_valid
                    : (is_mem0 | is_mem1) ? data_addr_ok
                                          : 1'b1;
-wire ex_slot_allow = ~ex_valid | (ex_ready_go & WB_allow_in);
+wire ex_downstream_ready = ex_has_mem ? WB_allow_in : fast_complete_ready;
+wire ex_slot_allow = ~ex_valid | (ex_ready_go & ex_downstream_ready);
 assign EX_allow_in = ex_slot_allow &
                      (~RF_to_EX_valid | ~incoming_mul | mul_in_ready);
-assign EX_to_WB_valid = ex_valid & ex_ready_go;
+assign EX_to_WB_valid    = ex_valid & ex_ready_go & ex_has_mem;
+assign fast_complete_valid = ex_valid & ex_ready_go & ~ex_has_mem;
 
-// WB 可能正在等待更老的访存响应。分支在 EX 被背压时只保留
-// 解析结果，等本 bundle 真正向 WB 推进时再冲刷，避免每拍重复 redirect。
-wire branch_resolve_fire = ex_ready_go & WB_allow_in;
+// 非访存通过独立完成口离开 EX；若下游冲突缓冲也已占用，则保持 EX，
+// 等仲裁允许后再解析分支/写 ROB，避免重复 redirect。
+wire branch_resolve_fire = ex_ready_go & fast_complete_ready;
 assign redirect = mispred0 & branch_resolve_fire;
 
 assign perf_data_wait      = ex_valid & (is_mem0 | is_mem1) & ~data_addr_ok;
 assign perf_mul_wait       = ex_valid & ex_has_mul & ~mul_out_valid;
-assign perf_branch_mispred = redirect & ex_ready_go & WB_allow_in;
+assign perf_branch_mispred = redirect;
 
 assign mul_in_valid  = RF_to_EX_valid & EX_allow_in & incoming_mul;
-assign mul_out_ready = ex_valid & ex_has_mul & WB_allow_in;
+assign mul_out_ready = ex_valid & ex_has_mul & ex_downstream_ready;
 
 mul u_mul (
     .clk(clk), .reset(reset),
@@ -174,7 +180,7 @@ wire [31:0] execute_result1 = s1.is_cpucfg ? cpucfg(s1.alu_src1)
                               : s1.is_mul   ? mul_low : alu_result1;
 
 wire has_branch = ex_v0 & s0.is_branch;
-assign bp_upd_en      = EX_to_WB_valid & WB_allow_in & has_branch;
+assign bp_upd_en      = fast_complete_valid & fast_complete_ready & has_branch;
 assign bp_upd_pc      = s0.pc;
 assign bp_upd_taken   = br_taken0;
 assign bp_upd_is_cond = s0.inst_beq | s0.inst_bne;
@@ -198,6 +204,16 @@ wire [31:0] fwd_data0 = (s0.rf_wdata_sel == 2'b10) ? (s0.pc + 32'd4)
                                                        : execute_result0;
 wire [31:0] fwd_data1 = (s1.rf_wdata_sel == 2'b10) ? (s1.pc + 32'd4)
                                                        : execute_result1;
+assign fast_complete_bus = '{
+    s0: '{pc: s0.pc, inst: s0.inst, rf_wdata: fwd_data0,
+          rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
+          pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx},
+    s1: '{pc: s1.pc, inst: s1.inst, rf_wdata: fwd_data1,
+          rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
+          pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx},
+    v1: ex_v1_eff
+};
+
 assign ex_fwd0 = '{valid: ex_v0 & (~s0.is_mul | mul_out_valid),
                    rf_we: s0.rf_we, is_ld: s0.is_ld,
                    pdst: s0.pdst, rf_wdata: fwd_data0};
