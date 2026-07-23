@@ -1,23 +1,22 @@
 // ============================================================================
-// Execute：双 ALU，单数据口，单三级乘法器。
+// Execute：双 ALU，单数据请求口，单三级乘法器。
 // IS 保证同一 bundle 最多一条访存，且执行中的分支只会位于 slot0；
-// 一个 mul.w 只可与独立纯 ALU 共发，bundle 仍整体等待乘法结果后写回。
+// 一个 mul.w 只可与独立纯 ALU 共发。访存请求携带完整完成 tag 进入
+// D-cache，配对的非访存槽同时从 fast completion 离开 EX。
 // ============================================================================
 import cpu_pkg::*;
 
 module EX (
     input  wire             clk,
     input  wire             reset,
+    input  epoch_t          current_epoch,
 
     input  wire             RF_to_EX_valid,
-    input  wire             WB_allow_in,
     input  wire             fast_complete_ready,
     output wire             EX_allow_in,
-    output wire             EX_to_WB_valid,
     output wire             fast_complete_valid,
 
     input  rf_to_ex_bus_t   RF_to_EX_BUS,
-    output ex_to_wb_bus_t   EX_to_WB_BUS,
     output wb_to_cm_bus_t   fast_complete_bus,
 
     output wire             redirect,
@@ -38,6 +37,7 @@ module EX (
     output wire   [ 2:0]    data_sram_size,
     output wire   [31:0]    data_sram_addr,
     output wire   [31:0]    data_sram_wdata,
+    output ex_wb_slot_t     data_sram_meta,
     input  wire             data_addr_ok,
 
     output wire             perf_data_wait,
@@ -125,19 +125,20 @@ wire [31:0] mul_low;
 wire [31:0] mul_high_unused;
 
 wire ex_has_mem    = is_mem0 | is_mem1;
-wire ex_ready_go   = ex_has_mul       ? mul_out_valid
-                   : (is_mem0 | is_mem1) ? data_addr_ok
-                                         : 1'b1;
-wire ex_downstream_ready = ex_has_mem ? WB_allow_in : fast_complete_ready;
+wire fast0_valid   = ex_v0 & ~is_mem0;
+wire fast1_valid   = ex_v1_commit & ~is_mem1;
+wire ex_has_fast   = fast0_valid | fast1_valid;
+wire ex_ready_go   = (~ex_has_mul | mul_out_valid) &
+                     (~ex_has_mem | data_addr_ok);
+wire ex_downstream_ready = ~ex_has_fast | fast_complete_ready;
 wire ex_slot_allow = ~ex_valid | (ex_ready_go & ex_downstream_ready);
 assign EX_allow_in = ex_slot_allow &
                      (~RF_to_EX_valid | ~incoming_mul | mul_in_ready);
-assign EX_to_WB_valid    = ex_valid & ex_ready_go & ex_has_mem;
-assign fast_complete_valid = ex_valid & ex_ready_go & ~ex_has_mem;
+assign fast_complete_valid = ex_valid & ex_ready_go & ex_has_fast;
 
 // 非访存通过独立完成口离开 EX；若下游冲突缓冲也已占用，则保持 EX，
 // 等仲裁允许后再解析分支/写 ROB，避免重复 redirect。
-wire branch_resolve_fire = ex_ready_go & fast_complete_ready;
+wire branch_resolve_fire = ex_ready_go & ex_downstream_ready;
 assign redirect = mispred0 & branch_resolve_fire;
 
 assign perf_data_wait      = ex_valid & (is_mem0 | is_mem1) & ~data_addr_ok;
@@ -145,7 +146,8 @@ assign perf_mul_wait       = ex_valid & ex_has_mul & ~mul_out_valid;
 assign perf_branch_mispred = redirect;
 
 assign mul_in_valid  = RF_to_EX_valid & EX_allow_in & incoming_mul;
-assign mul_out_ready = ex_valid & ex_has_mul & ex_downstream_ready;
+assign mul_out_ready = ex_valid & ex_has_mul & ex_downstream_ready &
+                       (~ex_has_mem | data_addr_ok);
 
 mul u_mul (
     .clk(clk), .reset(reset),
@@ -186,32 +188,46 @@ assign bp_upd_taken   = br_taken0;
 assign bp_upd_is_cond = s0.inst_beq | s0.inst_bne;
 assign bp_upd_target  = br_target0;
 
-assign EX_to_WB_BUS = '{
-    s0: '{pc: s0.pc, inst: s0.inst, alu_result: execute_result0,
-          is_mem: is_mem0, addr_lo: mem_addr0[1:0],
-          ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
-          rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
-          pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx},
-    s1: '{pc: s1.pc, inst: s1.inst, alu_result: execute_result1,
-          is_mem: is_mem1, addr_lo: mem_addr1[1:0],
-          ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
-          rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
-          pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx},
-    v1: ex_v1_eff
+assign data_sram_meta = mem_sel1 ? '{
+    pc: s1.pc, inst: s1.inst, alu_result: mem_addr1,
+    is_mem: 1'b1, addr_lo: mem_addr1[1:0],
+    ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
+    rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
+    pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx,
+    epoch: current_epoch
+} : '{
+    pc: s0.pc, inst: s0.inst, alu_result: mem_addr0,
+    is_mem: 1'b1, addr_lo: mem_addr0[1:0],
+    ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
+    rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
+    pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx,
+    epoch: current_epoch
 };
 
 wire [31:0] fwd_data0 = (s0.rf_wdata_sel == 2'b10) ? (s0.pc + 32'd4)
                                                        : execute_result0;
 wire [31:0] fwd_data1 = (s1.rf_wdata_sel == 2'b10) ? (s1.pc + 32'd4)
                                                        : execute_result1;
+wb_cm_slot_t fast_slot0;
+wb_cm_slot_t fast_slot1;
+assign fast_slot0 = fast0_valid ? '{
+    pc: s0.pc, inst: s0.inst, rf_wdata: fwd_data0,
+    rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
+    pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx
+} : '{
+    pc: s1.pc, inst: s1.inst, rf_wdata: fwd_data1,
+    rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
+    pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx
+};
+assign fast_slot1 = '{
+    pc: s1.pc, inst: s1.inst, rf_wdata: fwd_data1,
+    rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
+    pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx
+};
 assign fast_complete_bus = '{
-    s0: '{pc: s0.pc, inst: s0.inst, rf_wdata: fwd_data0,
-          rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
-          pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx},
-    s1: '{pc: s1.pc, inst: s1.inst, rf_wdata: fwd_data1,
-          rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
-          pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx},
-    v1: ex_v1_eff
+    s0: fast_slot0,
+    s1: fast_slot1,
+    v1: fast0_valid & fast1_valid
 };
 
 assign ex_fwd0 = '{valid: ex_v0 & (~s0.is_mul | mul_out_valid),

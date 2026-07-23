@@ -21,18 +21,24 @@ module regfile(
     // WRITE PORT 2 
     input  wire [ 3:0] rf_we2,
     input  preg_t      rf_waddr2,
-    input  wire [31:0] rf_wdata2
+    input  wire [31:0] rf_wdata2,
+    // WRITE PORT 3
+    input  wire [ 3:0] rf_we3,
+    input  preg_t      rf_waddr3,
+    input  wire [31:0] rf_wdata3
 );
 
 reg [31:0] rf[PREG_COUNT-1:0];
 
-// WRITE: 两个写端口同时写同一寄存器时, 程序序靠后的 port2 优先
+// WRITE: fast completion 使用 port1/2，独立 LSU completion 使用 port3。
+// 物理目的 tag 唯一，正常执行不会同拍写同一寄存器。
 always @(posedge clk) begin
     if (|rf_we1 && rf_waddr1 != preg_t'(0))
         rf[rf_waddr1] <= rf_wdata1;
     if (|rf_we2 && rf_waddr2 != preg_t'(0))
         rf[rf_waddr2] <= rf_wdata2;
-    // port2 的赋值在 port1 之后, Verilog 语义保证 port2 写入优先
+    if (|rf_we3 && rf_waddr3 != preg_t'(0))
+        rf[rf_waddr3] <= rf_wdata3;
 end
 
 // READ OUT 1

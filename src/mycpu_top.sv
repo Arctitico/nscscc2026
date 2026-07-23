@@ -5,7 +5,7 @@
 //          取指 译码 重命名 分发 发射 读寄存器 执行 写回 提交
 //
 // 当前已接入 8 项整数 IQ：纯 ALU 可按物理 tag ready 状态乱序双发；
-// 分支、乘法、访存和 cpucfg 仍作为保守屏障单发。
+// LSU 请求携带完成 tag，内存返回使用独立的第三完成/写回通道。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -53,12 +53,10 @@ wire RR_to_DP_valid;
 wire DP_to_IS_valid;
 wire IS_to_RF_valid;
 wire RF_to_EX_valid;
-wire EX_to_WB_valid;
-wire WB_to_ROB_valid;
 wire EX_fast_complete_valid;
 wire EX_fast_complete_ready;
-wire fast_pending_pop;
 wire complete_valid;
+wire mem_complete_valid;
 wire ROB_to_CM_valid;
 
 wire ID_allow_in;
@@ -67,7 +65,6 @@ wire DP_allow_in;
 wire IS_allow_in;
 wire RF_allow_in;
 wire EX_allow_in;
-wire WB_allow_in;
 wire CM_allow_in;
 
 if_to_id_bus_t IF_to_ID_BUS;
@@ -76,11 +73,9 @@ rr_to_dp_bus_t RR_to_DP_BUS;
 dp_to_is_bus_t DP_to_IS_BUS;
 is_to_rf_bus_t IS_to_RF_BUS;
 rf_to_ex_bus_t RF_to_EX_BUS;
-ex_to_wb_bus_t EX_to_WB_BUS;
-wb_to_cm_bus_t WB_to_ROB_BUS;
 wb_to_cm_bus_t EX_fast_complete_BUS;
-wb_to_cm_bus_t fast_pending_BUS;
 wb_to_cm_bus_t complete_BUS;
+wb_cm_slot_t mem_complete_slot;
 wb_to_cm_bus_t ROB_to_CM_BUS;
 
 wire [31:0] bp_pc0;
@@ -91,6 +86,7 @@ wire        redirect;
 wire [31:0] redirect_target;
 rob_idx_t   redirect_rob_idx;
 wire        flush = redirect;
+epoch_t     lsu_epoch;
 
 wire        bp_upd_en;
 wire [31:0] bp_upd_pc;
@@ -101,13 +97,14 @@ wire [31:0] bp_upd_target;
 fwd_bus_t ex_fwd0, ex_fwd1;
 fwd_bus_t fast_pending_fwd0, fast_pending_fwd1;
 fwd_bus_t wb_fwd0, wb_fwd1;
+fwd_bus_t mem_fwd;
 fwd_bus_t cm_fwd0, cm_fwd1;
 
 preg_t rf_raddr1, rf_raddr2, rf_raddr3, rf_raddr4;
 wire [31:0] rf_rdata1, rf_rdata2, rf_rdata3, rf_rdata4;
-wire [ 3:0] rf_we1, rf_we2;
-preg_t rf_waddr1, rf_waddr2;
-wire [31:0] rf_wdata1, rf_wdata2;
+wire [ 3:0] rf_we1, rf_we2, rf_we3;
+preg_t rf_waddr1, rf_waddr2, rf_waddr3;
+wire [31:0] rf_wdata1, rf_wdata2, rf_wdata3;
 wire [ 3:0] cm_rf_we1, cm_rf_we2;
 preg_t cm_rf_waddr1, cm_rf_waddr2;
 wire [31:0] cm_rf_wdata1, cm_rf_wdata2;
@@ -134,7 +131,9 @@ wire [ 3:0] ex_data_sram_we;
 wire [ 2:0] ex_data_sram_size;
 wire [31:0] ex_data_sram_addr;
 wire [31:0] ex_data_sram_wdata;
+ex_wb_slot_t ex_data_sram_meta;
 wire [31:0] ex_data_sram_rdata;
+ex_wb_slot_t ex_data_resp_meta;
 wire        ex_data_addr_ok;
 wire        ex_data_ok;
 wire        dcache_inst_safe;
@@ -156,6 +155,15 @@ wire perf_wb_data_wait_event;
 wire perf_data_wait_event = perf_ex_addr_wait_event | perf_wb_data_wait_event;
 wire perf_mul_wait_event;
 wire perf_branch_mispred_event;
+
+// 分支恢复后递增代次；D-cache 可以继续完成已发出的物理访问，但 WB
+// 会丢弃旧代次响应，后续放开推测 load 时不需要清空整个存储系统。
+always_ff @(posedge clk) begin
+    if (reset)
+        lsu_epoch <= '0;
+    else if (redirect)
+        lsu_epoch <= lsu_epoch + epoch_t'(1);
+end
 
 // ============================ 流水级例化 ============================
 IF u_IF (
@@ -243,6 +251,8 @@ IS u_IS (
     .rename_alloc_bus  (rob_alloc_bus           ),
     .complete_valid    (complete_valid          ),
     .complete_bus      (complete_BUS            ),
+    .mem_complete_valid(mem_complete_valid      ),
+    .mem_complete_slot (mem_complete_slot       ),
     .ex_wakeup0        (ex_fwd0                 ),
     .ex_wakeup1        (ex_fwd1                 ),
 
@@ -287,14 +297,12 @@ RF u_RF (
 EX u_EX (
     .clk            (clk                ),
     .reset          (reset              ),
+    .current_epoch  (lsu_epoch          ),
     .RF_to_EX_valid (RF_to_EX_valid     ),
-    .WB_allow_in    (WB_allow_in        ),
     .fast_complete_ready(EX_fast_complete_ready),
     .EX_allow_in    (EX_allow_in        ),
-    .EX_to_WB_valid (EX_to_WB_valid     ),
     .fast_complete_valid(EX_fast_complete_valid),
     .RF_to_EX_BUS   (RF_to_EX_BUS       ),
-    .EX_to_WB_BUS   (EX_to_WB_BUS       ),
     .fast_complete_bus(EX_fast_complete_BUS),
     .redirect       (redirect           ),
     .redirect_target(redirect_target    ),
@@ -311,6 +319,7 @@ EX u_EX (
     .data_sram_size (ex_data_sram_size  ),
     .data_sram_addr (ex_data_sram_addr  ),
     .data_sram_wdata(ex_data_sram_wdata ),
+    .data_sram_meta (ex_data_sram_meta  ),
     .data_addr_ok   (ex_data_addr_ok    ),
 
     .perf_data_wait      (perf_ex_addr_wait_event   ),
@@ -319,19 +328,17 @@ EX u_EX (
 );
 
 WB u_WB (
-    .clk            (clk                    ),
-    .reset          (reset                  ),
-    .EX_to_WB_valid (EX_to_WB_valid         ),
-    .CM_allow_in    (CM_allow_in            ),
-    .WB_allow_in    (WB_allow_in            ),
-    .WB_to_CM_valid (WB_to_ROB_valid        ),
-    .EX_to_WB_BUS   (EX_to_WB_BUS           ),
-    .WB_to_CM_BUS   (WB_to_ROB_BUS          ),
-    .data_sram_rdata(ex_data_sram_rdata     ),
-    .data_ok        (ex_data_ok             ),
-    .wb_fwd0        (wb_fwd0                ),
-    .wb_fwd1        (wb_fwd1                ),
-    .perf_data_wait (perf_wb_data_wait_event)
+    .clk               (clk                    ),
+    .reset             (reset                  ),
+    .flush             (flush                  ),
+    .current_epoch     (lsu_epoch              ),
+    .data_resp_valid   (ex_data_ok             ),
+    .data_resp_meta    (ex_data_resp_meta      ),
+    .data_resp_rdata   (ex_data_sram_rdata     ),
+    .mem_complete_valid(mem_complete_valid      ),
+    .mem_complete_slot (mem_complete_slot       ),
+    .mem_fwd           (mem_fwd                ),
+    .perf_data_wait    (perf_wb_data_wait_event)
 );
 
 rob u_rob (
@@ -348,6 +355,8 @@ rob u_rob (
     .head_idx         (rob_head_idx),
     .complete_valid   (complete_valid),
     .complete_bus     (complete_BUS),
+    .mem_complete_valid(mem_complete_valid),
+    .mem_complete_slot(mem_complete_slot),
     .recover_valid    (redirect),
     .recover_idx      (redirect_rob_idx),
     .recover_rat      (recover_rat),
@@ -383,51 +392,15 @@ CM u_CM (
     .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
 );
 
-// load/store 仍经 blocking WB；非访存从 EX 独立完成。单项 pending
-// buffer 吸收“load 返回与 ALU 完成同拍”的冲突：load 先写 ROB，ALU
-// bundle 下一拍完成，同时允许 EX 以 pop+refill 方式继续前进。
-reg fast_pending_valid;
-
-assign fast_pending_pop = fast_pending_valid & ~WB_to_ROB_valid;
-assign EX_fast_complete_ready = ~fast_pending_valid |
-                                fast_pending_pop;
-assign complete_valid = WB_to_ROB_valid |
-                        fast_pending_valid |
-                        EX_fast_complete_valid;
-assign complete_BUS = WB_to_ROB_valid ? WB_to_ROB_BUS
-                    : fast_pending_valid ? fast_pending_BUS
-                                         : EX_fast_complete_BUS;
-assign fast_pending_fwd0 = '{
-    valid: fast_pending_valid,
-    rf_we: fast_pending_BUS.s0.rf_we,
-    is_ld: 1'b0,
-    pdst: fast_pending_BUS.s0.pdst,
-    rf_wdata: fast_pending_BUS.s0.rf_wdata
-};
-assign fast_pending_fwd1 = '{
-    valid: fast_pending_valid & fast_pending_BUS.v1,
-    rf_we: fast_pending_BUS.s1.rf_we,
-    is_ld: 1'b0,
-    pdst: fast_pending_BUS.s1.pdst,
-    rf_wdata: fast_pending_BUS.s1.rf_wdata
-};
-
-always_ff @(posedge clk) begin
-    if (reset) begin
-        fast_pending_valid <= 1'b0;
-    end else begin
-        if (fast_pending_valid) begin
-            if (fast_pending_pop) begin
-                fast_pending_valid <= EX_fast_complete_valid;
-                if (EX_fast_complete_valid)
-                    fast_pending_BUS <= EX_fast_complete_BUS;
-            end
-        end else if (WB_to_ROB_valid & EX_fast_complete_valid) begin
-            fast_pending_valid <= 1'b1;
-            fast_pending_BUS   <= EX_fast_complete_BUS;
-        end
-    end
-end
+// fast ALU 双完成和 LSU 单完成使用独立端口，互不仲裁。RF 保留原有
+// wb_fwd 命名以避免复制一套旁路比较器，实际由 LSU completion 驱动。
+assign EX_fast_complete_ready = 1'b1;
+assign complete_valid = EX_fast_complete_valid;
+assign complete_BUS   = EX_fast_complete_BUS;
+assign fast_pending_fwd0 = '0;
+assign fast_pending_fwd1 = '0;
+assign wb_fwd0 = mem_fwd;
+assign wb_fwd1 = '0;
 
 // PRF 在完成时写入，ROB 只控制架构提交。
 assign rf_we1    = {4{complete_valid & complete_BUS.s0.rf_we}};
@@ -437,6 +410,9 @@ assign rf_we2    = {4{complete_valid & complete_BUS.v1 &
                       complete_BUS.s1.rf_we}};
 assign rf_waddr2 = complete_BUS.s1.pdst;
 assign rf_wdata2 = complete_BUS.s1.rf_wdata;
+assign rf_we3    = {4{mem_complete_valid & mem_complete_slot.rf_we}};
+assign rf_waddr3 = mem_complete_slot.pdst;
+assign rf_wdata3 = mem_complete_slot.rf_wdata;
 
 // ============================ 寄存器堆 ============================
 regfile u_regfile (
@@ -446,7 +422,8 @@ regfile u_regfile (
     .rf_raddr3(rf_raddr3), .rf_rdata3(rf_rdata3),
     .rf_raddr4(rf_raddr4), .rf_rdata4(rf_rdata4),
     .rf_we1   (rf_we1   ), .rf_waddr1(rf_waddr1), .rf_wdata1(rf_wdata1),
-    .rf_we2   (rf_we2   ), .rf_waddr2(rf_waddr2), .rf_wdata2(rf_wdata2)
+    .rf_we2   (rf_we2   ), .rf_waddr2(rf_waddr2), .rf_wdata2(rf_wdata2),
+    .rf_we3   (rf_we3   ), .rf_waddr3(rf_waddr3), .rf_wdata3(rf_wdata3)
 );
 
 // ============================ 分支预测 ============================
@@ -474,9 +451,11 @@ dcache u_dcache (
     .cpu_size     (ex_data_sram_size     ),
     .cpu_addr     (ex_data_sram_addr     ),
     .cpu_wdata    (ex_data_sram_wdata    ),
+    .cpu_meta     (ex_data_sram_meta     ),
     .cpu_addr_ok  (ex_data_addr_ok       ),
     .cpu_rdata    (ex_data_sram_rdata    ),
     .cpu_data_ok  (ex_data_ok            ),
+    .cpu_resp_meta(ex_data_resp_meta      ),
     .mem_rd_req   (data_rd_req           ),
     .mem_rd_size  (data_rd_size          ),
     .mem_rd_addr  (data_rd_addr          ),

@@ -18,6 +18,7 @@ localparam int unsigned ROB_BITS        = $clog2(ROB_COUNT);
 
 typedef logic [PREG_BITS-1:0] preg_t;
 typedef logic [ROB_BITS-1:0]  rob_idx_t;
+typedef logic [7:0]           epoch_t;
 typedef logic [ARCH_REG_COUNT-1:0][PREG_BITS-1:0] rat_snapshot_t;
 
 // ---------------------------------------------------------------------------
@@ -137,6 +138,7 @@ typedef struct packed {
     preg_t       pdst;
     preg_t       old_pdst;
     rob_idx_t    rob_idx;
+    epoch_t      epoch;        // LSU 请求代次；冲刷后迟到响应不得完成新指令
 } ex_wb_slot_t;
 
 typedef struct packed {

@@ -1,5 +1,5 @@
 // ============================================================================
-// 16 项双分配/双完成/双提交 ROB
+// 16 项双分配/三完成/双提交 ROB
 //
 // 完成结果按 rob_idx 写回，提交只观察 ROB head；整数 ALU 已可由 IQ 乱序发射。
 // 分支表项保存“执行完该分支后的 RAT snapshot”；误预测时保留到该分支，
@@ -23,6 +23,8 @@ module rob (
 
     input  wire             complete_valid,
     input  wb_to_cm_bus_t   complete_bus,
+    input  wire             mem_complete_valid,
+    input  wb_cm_slot_t     mem_complete_slot,
 
     input  wire             recover_valid,
     input  rob_idx_t        recover_idx,
@@ -132,6 +134,10 @@ always_ff @(posedge clk) begin
                 entries[complete_bus.s1.rob_idx].value <= complete_bus.s1.rf_wdata;
             end
         end
+        if (mem_complete_valid) begin
+            entries[mem_complete_slot.rob_idx].ready <= 1'b1;
+            entries[mem_complete_slot.rob_idx].value <= mem_complete_slot.rf_wdata;
+        end
     end else begin
         count <= count + alloc_num_w - commit_num_w;
         if (alloc_fire) tail <= tail + (alloc_v1 ? rob_idx_t'(2) : rob_idx_t'(1));
@@ -178,6 +184,10 @@ always_ff @(posedge clk) begin
                 entries[complete_bus.s1.rob_idx].ready <= 1'b1;
                 entries[complete_bus.s1.rob_idx].value <= complete_bus.s1.rf_wdata;
             end
+        end
+        if (mem_complete_valid) begin
+            entries[mem_complete_slot.rob_idx].ready <= 1'b1;
+            entries[mem_complete_slot.rob_idx].value <= mem_complete_slot.rf_wdata;
         end
     end
 end

@@ -33,6 +33,8 @@ module IS (
     input  rr_to_dp_bus_t   rename_alloc_bus,
     input  wire             complete_valid,
     input  wb_to_cm_bus_t   complete_bus,
+    input  wire             mem_complete_valid,
+    input  wb_cm_slot_t     mem_complete_slot,
     input  fwd_bus_t        ex_wakeup0,
     input  fwd_bus_t        ex_wakeup1,
 
@@ -65,7 +67,9 @@ function automatic logic completion_hit(input preg_t tag);
         (complete_valid & complete_bus.s0.rf_we &
          (complete_bus.s0.pdst == tag)) |
         (complete_valid & complete_bus.v1 & complete_bus.s1.rf_we &
-         (complete_bus.s1.pdst == tag));
+         (complete_bus.s1.pdst == tag)) |
+        (mem_complete_valid & mem_complete_slot.rf_we &
+         (mem_complete_slot.pdst == tag));
 endfunction
 
 function automatic logic ex_wakeup_hit(input preg_t tag);
@@ -334,6 +338,9 @@ always_ff @(posedge clk) begin
                 (complete_bus.s1.pdst != preg_t'(0)))
                 preg_ready[complete_bus.s1.pdst] <= 1'b1;
         end
+        if (mem_complete_valid && mem_complete_slot.rf_we &&
+            (mem_complete_slot.pdst != preg_t'(0)))
+            preg_ready[mem_complete_slot.pdst] <= 1'b1;
 
         // 分配优先于同拍完成；free-list 不旁路同拍释放，正常情况下不会
         // 命中同一 tag，但明确优先级可保护后续接口演进。

@@ -8,6 +8,8 @@
 // - load miss 发起 4 beat 重填。外部 size=3'b100 是本核内部的“16B line”编码。
 // - 指令 miss 只有在 write buffer 排空后才能发出，保证自修改代码可见。
 // ============================================================================
+import cpu_pkg::*;
+
 module dcache #(
     parameter integer IDX_BITS  = 7,
     parameter integer WORD_BITS = 2
@@ -20,9 +22,11 @@ module dcache #(
     input  wire [ 2:0] cpu_size,
     input  wire [31:0] cpu_addr,
     input  wire [31:0] cpu_wdata,
+    input  ex_wb_slot_t cpu_meta,
     output wire        cpu_addr_ok,
     output wire [31:0] cpu_rdata,
     output wire        cpu_data_ok,
+    output ex_wb_slot_t cpu_resp_meta,
 
     output wire        mem_rd_req,
     output wire [ 2:0] mem_rd_size,
@@ -62,6 +66,7 @@ reg [31:0] req_addr;
 reg [ 3:0] req_we;
 reg [ 2:0] req_size;
 reg [31:0] req_wdata;
+ex_wb_slot_t req_meta;
 
 wire req_store = |req_we;
 wire req_cacheable = (req_addr[31:23] == 9'h038);
@@ -156,6 +161,7 @@ assign cpu_data_ok = cache_load_hit | cache_store_finish | uncached_done |
                      refill_critical;
 assign cpu_rdata   = uncached_done    ? mem_rdata :
                      refill_critical  ? mem_rdata : hit_data;
+assign cpu_resp_meta = req_meta;
 
 assign perf_hit      = cache_load_hit;
 assign perf_miss     = (state == S_LOOKUP) & req_cacheable & ~req_store & ~hit;
@@ -222,6 +228,7 @@ always @(posedge clk) begin
         req_we    <= cpu_we;
         req_size  <= cpu_size;
         req_wdata <= cpu_wdata;
+        req_meta  <= cpu_meta;
     end
 end
 

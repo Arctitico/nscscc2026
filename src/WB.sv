@@ -1,45 +1,45 @@
 // ============================================================================
-// Memory response / Write Back：访存指令在此等待 data_ok，
-// 两槽独立完成 load 对齐/扩展和写回数据选择。
+// Tagged LSU response / Write Back
+//
+// D-cache 在接受请求时保存 ex_wb_slot_t，并在 hit/refill/uncached/store
+// 完成时原样返回。这里登记响应并完成 load 对齐/扩展。请求的选择性
+// 冲刷由保存请求的 MSHR 按 ROB 年龄执行，WB 不能仅凭全局 epoch 丢弃
+// 响应，否则会误杀已发射但尚未完成的更老 store。
+// 整数 fast completion 与本通道独立，因而连续 load hit 不再占住
+// EX/WB bundle，也不与同拍双 ALU 争用完成端口。
 // ============================================================================
 import cpu_pkg::*;
 
 module WB (
     input  wire             clk,
     input  wire             reset,
+    input  wire             flush,
+    input  epoch_t          current_epoch,
 
-    input  wire             EX_to_WB_valid,
-    input  wire             CM_allow_in,
-    output wire             WB_allow_in,
-    output wire             WB_to_CM_valid,
+    input  wire             data_resp_valid,
+    input  ex_wb_slot_t     data_resp_meta,
+    input  wire   [31:0]    data_resp_rdata,
 
-    input  ex_to_wb_bus_t   EX_to_WB_BUS,
-    output wb_to_cm_bus_t   WB_to_CM_BUS,
-
-    input  wire   [31:0]    data_sram_rdata,
-    input  wire             data_ok,
-
-    output fwd_bus_t        wb_fwd0,
-    output fwd_bus_t        wb_fwd1,
+    output wire             mem_complete_valid,
+    output wb_cm_slot_t     mem_complete_slot,
+    output fwd_bus_t        mem_fwd,
     output wire             perf_data_wait
 );
 
-reg            wb_valid;
-ex_to_wb_bus_t wb_r;
+reg          wb_valid;
+ex_wb_slot_t wb_meta;
+reg [31:0]   wb_rdata;
 
-wire wb_mem = wb_r.s0.is_mem | (wb_r.v1 & wb_r.s1.is_mem);
-wire wb_ready_go = ~wb_mem | data_ok;
-assign WB_allow_in    = ~wb_valid | (wb_ready_go & CM_allow_in);
-assign WB_to_CM_valid =  wb_valid &  wb_ready_go;
-assign perf_data_wait = wb_valid & wb_mem & ~data_ok;
-
-always @(posedge clk) begin
-    if (reset)            wb_valid <= 1'b0;
-    else if (WB_allow_in) wb_valid <= EX_to_WB_valid;
-end
-
-always @(posedge clk) begin
-    if (EX_to_WB_valid & WB_allow_in) wb_r <= EX_to_WB_BUS;
+always_ff @(posedge clk) begin
+    if (reset) begin
+        wb_valid <= 1'b0;
+    end else begin
+        wb_valid <= data_resp_valid;
+        if (data_resp_valid) begin
+            wb_meta  <= data_resp_meta;
+            wb_rdata <= data_resp_rdata;
+        end
+    end
 end
 
 function automatic [31:0] load_data(input ex_wb_slot_t w,
@@ -60,44 +60,32 @@ function automatic [31:0] load_data(input ex_wb_slot_t w,
     endcase
 endfunction
 
-function automatic [31:0] write_data(input ex_wb_slot_t w,
-                                     input [31:0] mem_rdata);
-    case (w.rf_wdata_sel)
-        2'b01:   write_data = load_data(w, mem_rdata);
-        2'b10:   write_data = w.pc + 32'd4;
-        default: write_data = w.alu_result;
-    endcase
-endfunction
-
-wire [31:0] rf_wdata0 = write_data(wb_r.s0, data_sram_rdata);
-wire [31:0] rf_wdata1 = write_data(wb_r.s1, data_sram_rdata);
-// WB 的 load 永远由下一拍 CM 前递。这里单独构造非 load 数据，避免虽然
-// 最终被 is_ld 条件屏蔽，综合后 D-cache hit/data 仍穿过通用 rf_wdata mux
-// 到达 RF 操作数和乘法器输入。
-wire [31:0] wb_nonload_data0 = (wb_r.s0.rf_wdata_sel == 2'b10)
-                              ? (wb_r.s0.pc + 32'd4) : wb_r.s0.alu_result;
-wire [31:0] wb_nonload_data1 = (wb_r.s1.rf_wdata_sel == 2'b10)
-                              ? (wb_r.s1.pc + 32'd4) : wb_r.s1.alu_result;
-
-assign WB_to_CM_BUS = '{
-    s0: '{pc: wb_r.s0.pc, inst: wb_r.s0.inst, rf_wdata: rf_wdata0,
-          rf_we: wb_r.s0.rf_we, rf_waddr: wb_r.s0.rf_waddr,
-          pdst: wb_r.s0.pdst, old_pdst: wb_r.s0.old_pdst,
-          rob_idx: wb_r.s0.rob_idx},
-    s1: '{pc: wb_r.s1.pc, inst: wb_r.s1.inst, rf_wdata: rf_wdata1,
-          rf_we: wb_r.s1.rf_we, rf_waddr: wb_r.s1.rf_waddr,
-          pdst: wb_r.s1.pdst, old_pdst: wb_r.s1.old_pdst,
-          rob_idx: wb_r.s1.rob_idx},
-    v1: wb_r.v1
+wire [31:0] result = (wb_meta.rf_wdata_sel == 2'b01)
+                   ? load_data(wb_meta, wb_rdata)
+                   : wb_meta.alu_result;
+// flush/current_epoch 保留在接口上供后续断言与诊断；真正的选择性杀除
+// 必须在持有全部未决项的 D-cache/MSHR 中进行。
+assign mem_complete_valid = wb_valid;
+assign mem_complete_slot = '{
+    pc: wb_meta.pc,
+    inst: wb_meta.inst,
+    rf_wdata: result,
+    rf_we: wb_meta.rf_we,
+    rf_waddr: wb_meta.rf_waddr,
+    pdst: wb_meta.pdst,
+    old_pdst: wb_meta.old_pdst,
+    rob_idx: wb_meta.rob_idx
 };
 
-assign wb_fwd0 = '{valid: wb_valid, rf_we: wb_r.s0.rf_we,
-                   // 命中数据在本拍末写入 CM；不把 tag-compare/data_ok
-                   // 组合穿过 WB/RF 直接送到下一条指令，下一拍由 CM 前递。
-                   is_ld: wb_r.s0.is_mem & (wb_r.s0.rf_wdata_sel == 2'b01),
-                   pdst: wb_r.s0.pdst, rf_wdata: wb_nonload_data0};
-assign wb_fwd1 = '{valid: wb_valid & wb_r.v1, rf_we: wb_r.s1.rf_we,
-                   is_ld: wb_r.s1.is_mem & (wb_r.s1.rf_wdata_sel == 2'b01),
-                   pdst: wb_r.s1.pdst, rf_wdata: wb_nonload_data1};
+assign mem_fwd = '{
+    valid: mem_complete_valid,
+    rf_we: wb_meta.rf_we,
+    is_ld: 1'b0,
+    pdst: wb_meta.pdst,
+    rf_wdata: result
+};
+
+// 等待现在发生在 D-cache/MSHR 中；保留统计端口兼容顶层。
+assign perf_data_wait = 1'b0;
 
 endmodule
