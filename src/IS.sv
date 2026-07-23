@@ -2,7 +2,9 @@
 // IS —— 8 项整数发射队列
 //
 // 纯 ALU 指令按物理源 tag 的 ready 状态唤醒，并可越过未就绪的更老纯
-// ALU，最多选择两条送往 RF。分支、乘法、访存和 cpucfg 作为顺序屏障：
+// ALU，最多选择两条送往 RF。8 个物理槽位之外另设一张仅保存槽号的
+// 年龄顺序表，避免在发射关键路径上逐项比较 ROB 距离。分支、乘法、
+// 访存和 cpucfg 作为顺序屏障：
 // 它们只在成为队列最老项且源已就绪时发射；除 cpucfg 外可携带屏障后、
 // 下一屏障前的一条独立纯 ALU，年轻纯 ALU 不单独越过屏障。
 //
@@ -47,11 +49,11 @@ module IS (
 localparam int unsigned IQ_DEPTH = 8;
 localparam int unsigned IQ_BITS  = $clog2(IQ_DEPTH);
 localparam logic [3:0] IQ_DEPTH_W = 4'd8;
-localparam logic [ROB_BITS:0] ROB_DIST_END = {1'b1, {ROB_BITS{1'b0}}};
 
 rr_slot_t iq_entry [0:IQ_DEPTH-1];
 logic [IQ_DEPTH-1:0] iq_valid;
 logic [3:0]          count;
+logic [IQ_BITS-1:0]  age_order [0:IQ_DEPTH-1];
 
 // p0-p31 是复位后的初始架构映射；新分配目的 tag 在 rename 当拍清 ready，
 // WB 完成时再置 ready。释放 tag 的 ready 值无意义，下次分配会重新清零。
@@ -74,7 +76,6 @@ function automatic logic ex_wakeup_hit(input preg_t tag);
          (ex_wakeup1.pdst == tag) & (tag != preg_t'(0)));
 endfunction
 
-logic [ROB_BITS-1:0] iq_dist [0:IQ_DEPTH-1];
 logic [IQ_DEPTH-1:0] iq_pure_alu;
 logic [IQ_DEPTH-1:0] iq_ready;
 
@@ -94,13 +95,13 @@ generate
                          iq_entry[g].id.d_bus.is_ld |
                          iq_entry[g].id.d_bus.is_st;
 
-        assign iq_dist[g]     = iq_entry[g].rob_idx - rob_head_idx;
         assign iq_pure_alu[g] = ~serial_op;
         assign iq_ready[g]    = src1_ready & src2_ready;
     end
 endgenerate
 
-// 找到最老队列项、最老保守屏障，以及屏障之前最老的两条 ready ALU。
+// age_order 按程序顺序保存有效物理槽号。因此选择只需顺序扫描 8 个
+// 3-bit 槽号，无需将 ROB head 扇出到所有槽位并级联距离比较器。
 logic [IQ_DEPTH-1:0] select_mask;
 logic [1:0]          select_count;
 logic [IQ_BITS-1:0]  select_idx0;
@@ -108,19 +109,12 @@ logic [IQ_BITS-1:0]  select_idx1;
 logic                select_ooo;
 wire                 select_valid = (select_count != 2'd0);
 
-logic oldest_found;
-logic barrier_found;
 logic first_found;
 logic second_found;
 logic pair_found;
-logic [IQ_BITS-1:0] oldest_idx;
-logic [IQ_BITS-1:0] pair_idx;
-logic [ROB_BITS:0] oldest_dist;
-logic [ROB_BITS:0] barrier_dist;
-logic [ROB_BITS:0] first_dist;
-logic [ROB_BITS:0] second_dist;
-logic [ROB_BITS:0] pair_dist;
-logic [ROB_BITS:0] next_barrier_dist;
+logic before_barrier;
+logic seen_unselected;
+logic [IQ_BITS-1:0] scan_idx;
 
 always_comb begin
     select_mask  = '0;
@@ -129,111 +123,77 @@ always_comb begin
     select_idx1  = '0;
     select_ooo   = 1'b0;
 
-    oldest_found = 1'b0;
-    barrier_found = 1'b0;
     first_found  = 1'b0;
     second_found = 1'b0;
     pair_found   = 1'b0;
-    oldest_idx   = '0;
-    pair_idx     = '0;
-    oldest_dist  = ROB_DIST_END;
-    barrier_dist = ROB_DIST_END;
-    first_dist   = ROB_DIST_END;
-    second_dist  = ROB_DIST_END;
-    pair_dist    = ROB_DIST_END;
-    next_barrier_dist = ROB_DIST_END;
-
-    for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
-        if (iq_valid[k] &&
-            (!oldest_found || ({1'b0, iq_dist[k]} < oldest_dist))) begin
-            oldest_found = 1'b1;
-            oldest_idx   = IQ_BITS'(k);
-            oldest_dist  = {1'b0, iq_dist[k]};
-        end
-        if (iq_valid[k] && !iq_pure_alu[k] &&
-            (!barrier_found || ({1'b0, iq_dist[k]} < barrier_dist))) begin
-            barrier_found = 1'b1;
-            barrier_dist  = {1'b0, iq_dist[k]};
-        end
-    end
+    before_barrier = 1'b1;
+    seen_unselected = 1'b0;
+    scan_idx = '0;
 
     // 最老项若是顺序屏障，先选择它；分支/乘法/单访存可再带独立 ALU。
-    if (oldest_found && !iq_pure_alu[oldest_idx]) begin
-        if (iq_ready[oldest_idx]) begin
-            select_mask[oldest_idx] = 1'b1;
-            select_idx0             = oldest_idx;
+    if ((count != 4'd0) && !iq_pure_alu[age_order[0]]) begin
+        if (iq_ready[age_order[0]]) begin
+            select_mask[age_order[0]] = 1'b1;
+            select_idx0               = age_order[0];
             select_count            = 2'd1;
 
             // 恢复旧后端已经验证过的安全配对：最老分支、乘法或单访存
             // 可携带一条独立年轻 ALU。候选不越过下一个顺序屏障；
             // 分支误预测时 EX 会杀掉 slot1。cpucfg 仍保持单发。
-            if (iq_entry[oldest_idx].id.d_bus.is_branch |
-                iq_entry[oldest_idx].id.d_bus.is_mul |
-                iq_entry[oldest_idx].id.d_bus.is_ld |
-                iq_entry[oldest_idx].id.d_bus.is_st) begin
-                for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
-                    if (iq_valid[k] && !iq_pure_alu[k] &&
-                        ({1'b0, iq_dist[k]} > oldest_dist) &&
-                        ({1'b0, iq_dist[k]} < next_barrier_dist))
-                        next_barrier_dist = {1'b0, iq_dist[k]};
-                end
-                for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
-                    if (iq_valid[k] && iq_pure_alu[k] && iq_ready[k] &&
-                        ({1'b0, iq_dist[k]} > oldest_dist) &&
-                        ({1'b0, iq_dist[k]} < next_barrier_dist) &&
-                        (!pair_found || ({1'b0, iq_dist[k]} < pair_dist))) begin
-                        pair_found = 1'b1;
-                        pair_idx   = IQ_BITS'(k);
-                        pair_dist  = {1'b0, iq_dist[k]};
+            if (iq_entry[age_order[0]].id.d_bus.is_branch |
+                iq_entry[age_order[0]].id.d_bus.is_mul |
+                iq_entry[age_order[0]].id.d_bus.is_ld |
+                iq_entry[age_order[0]].id.d_bus.is_st) begin
+                for (int unsigned pos = 1; pos < IQ_DEPTH; pos++) begin
+                    scan_idx = age_order[pos];
+                    if ((pos < count) && before_barrier) begin
+                        if (!iq_pure_alu[scan_idx]) begin
+                            before_barrier = 1'b0;
+                        end else if (iq_ready[scan_idx] && !pair_found) begin
+                            pair_found = 1'b1;
+                            select_mask[scan_idx] = 1'b1;
+                            select_idx1 = scan_idx;
+                        end
                     end
                 end
-                if (pair_found) begin
-                    select_mask[pair_idx] = 1'b1;
-                    select_idx1           = pair_idx;
+                if (pair_found)
                     select_count          = 2'd2;
-                end
             end
         end
     end else begin
-        for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
-            if (iq_valid[k] && iq_pure_alu[k] && iq_ready[k] &&
-                (!barrier_found || ({1'b0, iq_dist[k]} < barrier_dist))) begin
-                if (!first_found || ({1'b0, iq_dist[k]} < first_dist)) begin
-                    if (first_found) begin
-                        second_found = 1'b1;
-                        select_idx1  = select_idx0;
-                        second_dist  = first_dist;
-                    end
+        // 从最老端扫到第一条顺序屏障，选择最老的两条 ready ALU。
+        for (int unsigned pos = 0; pos < IQ_DEPTH; pos++) begin
+            scan_idx = age_order[pos];
+            if ((pos < count) && before_barrier) begin
+                if (!iq_pure_alu[scan_idx]) begin
+                    before_barrier = 1'b0;
+                end else if (iq_ready[scan_idx] && !first_found) begin
                     first_found = 1'b1;
-                    select_idx0 = IQ_BITS'(k);
-                    first_dist  = {1'b0, iq_dist[k]};
-                end else if (!second_found ||
-                             ({1'b0, iq_dist[k]} < second_dist)) begin
+                    select_idx0 = scan_idx;
+                    select_mask[scan_idx] = 1'b1;
+                end else if (iq_ready[scan_idx] && !second_found) begin
                     second_found = 1'b1;
-                    select_idx1  = IQ_BITS'(k);
-                    second_dist  = {1'b0, iq_dist[k]};
+                    select_idx1  = scan_idx;
+                    select_mask[scan_idx] = 1'b1;
                 end
             end
         end
 
         if (first_found) begin
-            select_mask[select_idx0] = 1'b1;
             select_count = 2'd1;
-            if (second_found) begin
-                select_mask[select_idx1] = 1'b1;
+            if (second_found)
                 select_count = 2'd2;
-            end
         end
     end
 
     // 若任一被选项前面仍留有未选的有效项，本拍发生真实乱序越过。
-    for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
-        if (select_mask[k]) begin
-            for (int unsigned m = 0; m < IQ_DEPTH; m++) begin
-                if (iq_valid[m] && !select_mask[m] &&
-                    ({1'b0, iq_dist[m]} < {1'b0, iq_dist[k]}))
-                    select_ooo = 1'b1;
-            end
+    for (int unsigned pos = 0; pos < IQ_DEPTH; pos++) begin
+        scan_idx = age_order[pos];
+        if (pos < count) begin
+            if (select_mask[scan_idx] && seen_unselected)
+                select_ooo = 1'b1;
+            if (!select_mask[scan_idx])
+                seen_unselected = 1'b1;
         end
     end
 end
@@ -307,12 +267,41 @@ wire [1:0] issued_count = select_fire ? select_count : 2'd0;
 wire [3:0] dispatch_count_w = {2'b0, dispatch_count};
 wire [3:0] issued_count_w   = {2'b0, issued_count};
 
+logic [IQ_BITS-1:0] age_order_next [0:IQ_DEPTH-1];
+logic [3:0] compact_count;
+always_comb begin
+    for (int unsigned pos = 0; pos < IQ_DEPTH; pos++)
+        age_order_next[pos] = '0;
+
+    compact_count = 4'd0;
+    for (int unsigned pos = 0; pos < IQ_DEPTH; pos++) begin
+        if ((pos < count) &&
+            !(select_fire && select_mask[age_order[pos]])) begin
+            age_order_next[compact_count[IQ_BITS-1:0]] = age_order[pos];
+            compact_count = compact_count + 4'd1;
+        end
+    end
+
+    if (dispatch_fire) begin
+        age_order_next[compact_count[IQ_BITS-1:0]] = free_idx0;
+        compact_count = compact_count + 4'd1;
+        if (DP_to_IS_BUS.rr_to_dp_bus.v1) begin
+            age_order_next[compact_count[IQ_BITS-1:0]] = free_idx1;
+            compact_count = compact_count + 4'd1;
+        end
+    end
+end
+
 always_ff @(posedge clk) begin
     if (reset | flush) begin
         iq_valid <= '0;
         count    <= 4'd0;
+        for (int unsigned pos = 0; pos < IQ_DEPTH; pos++)
+            age_order[pos] <= '0;
     end else begin
         count <= count + dispatch_count_w - issued_count_w;
+        for (int unsigned pos = 0; pos < IQ_DEPTH; pos++)
+            age_order[pos] <= age_order_next[pos];
 
         if (select_fire) begin
             for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
