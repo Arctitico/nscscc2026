@@ -34,19 +34,18 @@ reg            is_valid;
 dp_to_is_bus_t is_bus_r;
 reg            slot1_pending;
 
-id_to_rr_bus_t idp;
-assign idp = is_bus_r.rr_to_dp_bus.id_to_rr_bus;
+rr_to_dp_bus_t renamed;
+assign renamed = is_bus_r.rr_to_dp_bus;
 
 d_bus_t db0;
 d_bus_t db1;
-assign db0 = idp.s0.d_bus;
-assign db1 = idp.s1.d_bus;
+assign db0 = renamed.s0.id.d_bus;
+assign db1 = renamed.s1.id.d_bus;
 
-wire        s0_writes = db0.rf_we & (db0.rf_waddr != 5'b0);
-wire [ 4:0] s1_rkd    = db1.src_reg_is_rd ? db1.rd : db1.rk;
+wire        s0_writes = db0.rf_we & (renamed.s0.pdst != preg_t'(0));
 wire        intra_raw = s0_writes &
-                        ((db1.need_rj  & (db0.rf_waddr == db1.rj)) |
-                         (db1.need_rkd & (db0.rf_waddr == s1_rkd)));
+                        ((db1.need_rj  & (renamed.s0.pdst == renamed.s1.psrc1)) |
+                         (db1.need_rkd & (renamed.s0.pdst == renamed.s1.psrc2)));
 wire both_mem = (db0.is_ld | db0.is_st) & (db1.is_ld | db1.is_st);
 wire slot1_mem = db1.is_ld | db1.is_st;
 // 分支只允许出现在执行槽 0。slot0 分支可以携带一个无访存的年轻
@@ -64,8 +63,8 @@ wire mul_pair_ok = ~any_mul |
                                (db1.is_mul & pure_alu0)));
 wire mul_block = any_mul & ~mul_pair_ok;
 
-wire can_coissue = idp.v1 & ~both_mem & branch_pair_ok & mul_pair_ok & ~intra_raw;
-wire issuing_split = is_valid & ~slot1_pending & idp.v1 & ~can_coissue;
+wire can_coissue = renamed.v1 & ~both_mem & branch_pair_ok & mul_pair_ok & ~intra_raw;
+wire issuing_split = is_valid & ~slot1_pending & renamed.v1 & ~can_coissue;
 wire group_last    = slot1_pending | ~issuing_split;
 
 assign IS_to_RF_valid = is_valid;
@@ -74,7 +73,7 @@ wire   is_fire        = IS_to_RF_valid & RF_allow_in;
 
 // 这些脉冲只描述一次真正完成的 IS 发射。多个 split 原因可以同时为 1，
 // 便于区分“本次为何不能配对”；perf_split_total 则始终每个拆分 bundle 只计 1。
-assign perf_coissue     = is_fire & ~slot1_pending & idp.v1 & can_coissue;
+assign perf_coissue     = is_fire & ~slot1_pending & renamed.v1 & can_coissue;
 assign perf_split_total = is_fire & issuing_split;
 assign perf_split_raw   = is_fire & issuing_split & intra_raw;
 assign perf_split_mem   = is_fire & issuing_split & both_mem;
@@ -97,21 +96,21 @@ always @(posedge clk) begin
     else if (is_fire & slot1_pending)   slot1_pending <= 1'b0;
 end
 
-id_to_rr_bus_t out_idp;
+rr_to_dp_bus_t out_renamed;
 always_comb begin
     if (slot1_pending) begin
-        out_idp.s0 = idp.s1;
-        out_idp.s1 = idp.s1;
-        out_idp.v1 = 1'b0;
+        out_renamed.s0 = renamed.s1;
+        out_renamed.s1 = renamed.s1;
+        out_renamed.v1 = 1'b0;
     end else if (issuing_split) begin
-        out_idp.s0 = idp.s0;
-        out_idp.s1 = idp.s1;
-        out_idp.v1 = 1'b0;
+        out_renamed.s0 = renamed.s0;
+        out_renamed.s1 = renamed.s1;
+        out_renamed.v1 = 1'b0;
     end else begin
-        out_idp = idp;
+        out_renamed = renamed;
     end
 end
 
-assign IS_to_RF_BUS = '{dp_to_is_bus: '{rr_to_dp_bus: '{id_to_rr_bus: out_idp}}};
+assign IS_to_RF_BUS = '{dp_to_is_bus: '{rr_to_dp_bus: out_renamed}};
 
 endmodule

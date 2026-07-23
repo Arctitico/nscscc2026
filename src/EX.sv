@@ -182,11 +182,13 @@ assign EX_to_WB_BUS = '{
     s0: '{pc: s0.pc, inst: s0.inst, alu_result: execute_result0,
           is_mem: is_mem0, addr_lo: mem_addr0[1:0],
           ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
-          rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr},
+          rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
+          pdst: s0.pdst, old_pdst: s0.old_pdst},
     s1: '{pc: s1.pc, inst: s1.inst, alu_result: execute_result1,
           is_mem: is_mem1, addr_lo: mem_addr1[1:0],
           ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
-          rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr},
+          rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
+          pdst: s1.pdst, old_pdst: s1.old_pdst},
     v1: ex_v1_eff
 };
 
@@ -196,12 +198,12 @@ wire [31:0] fwd_data1 = (s1.rf_wdata_sel == 2'b10) ? (s1.pc + 32'd4)
                                                        : execute_result1;
 assign ex_fwd0 = '{valid: ex_v0 & (~s0.is_mul | mul_out_valid),
                    rf_we: s0.rf_we, is_ld: s0.is_ld,
-                   rf_waddr: s0.rf_waddr, rf_wdata: fwd_data0};
+                   pdst: s0.pdst, rf_wdata: fwd_data0};
 // branch+slot1 的结果在分支确认前不直接旁路给下一 bundle。复用
 // is_ld 作为“EX 结果尚不可消费”标志，让 RF 等一拍从 WB 取值；它
 // 与 mispred0 无关，因此不会把分支比较重新接回 RF 的关键路径。
 assign ex_fwd1 = '{valid: ex_v1 & (~s1.is_mul | mul_out_valid),
                    rf_we: s1.rf_we, is_ld: s1.is_ld | s0.is_branch,
-                   rf_waddr: s1.rf_waddr, rf_wdata: fwd_data1};
+                   pdst: s1.pdst, rf_wdata: fwd_data1};
 
 endmodule

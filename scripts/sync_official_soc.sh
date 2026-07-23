@@ -13,7 +13,7 @@ if [[ ! -f "${target_dir}/README.md" ]]; then
 fi
 
 sources=(
-    tools.sv alu.sv mul.sv decoder.sv regfile.sv bpu.sv icache.sv
+    tools.sv alu.sv mul.sv decoder.sv regfile.sv preg_free_list.sv bpu.sv icache.sv
     write_buffer.sv dcache.sv
     IF.sv ID.sv RR.sv DP.sv IS.sv RF.sv EX.sv WB.sv CM.sv
     mycpu_top.sv cpu_axi_bridge.sv core_top.sv

@@ -91,10 +91,10 @@ fwd_bus_t ex_fwd0, ex_fwd1;
 fwd_bus_t wb_fwd0, wb_fwd1;
 fwd_bus_t cm_fwd0, cm_fwd1;
 
-wire [ 4:0] rf_raddr1, rf_raddr2, rf_raddr3, rf_raddr4;
+preg_t rf_raddr1, rf_raddr2, rf_raddr3, rf_raddr4;
 wire [31:0] rf_rdata1, rf_rdata2, rf_rdata3, rf_rdata4;
 wire [ 3:0] rf_we1, rf_we2;
-wire [ 4:0] rf_waddr1, rf_waddr2;
+preg_t rf_waddr1, rf_waddr2;
 wire [31:0] rf_wdata1, rf_wdata2;
 
 wire        ic_req;

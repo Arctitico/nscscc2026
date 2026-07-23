@@ -81,9 +81,11 @@ wire [31:0] wb_nonload_data1 = (wb_r.s1.rf_wdata_sel == 2'b10)
 
 assign WB_to_CM_BUS = '{
     s0: '{pc: wb_r.s0.pc, inst: wb_r.s0.inst, rf_wdata: rf_wdata0,
-          rf_we: wb_r.s0.rf_we, rf_waddr: wb_r.s0.rf_waddr},
+          rf_we: wb_r.s0.rf_we, rf_waddr: wb_r.s0.rf_waddr,
+          pdst: wb_r.s0.pdst, old_pdst: wb_r.s0.old_pdst},
     s1: '{pc: wb_r.s1.pc, inst: wb_r.s1.inst, rf_wdata: rf_wdata1,
-          rf_we: wb_r.s1.rf_we, rf_waddr: wb_r.s1.rf_waddr},
+          rf_we: wb_r.s1.rf_we, rf_waddr: wb_r.s1.rf_waddr,
+          pdst: wb_r.s1.pdst, old_pdst: wb_r.s1.old_pdst},
     v1: wb_r.v1
 };
 
@@ -91,9 +93,9 @@ assign wb_fwd0 = '{valid: wb_valid, rf_we: wb_r.s0.rf_we,
                    // 命中数据在本拍末写入 CM；不把 tag-compare/data_ok
                    // 组合穿过 WB/RF 直接送到下一条指令，下一拍由 CM 前递。
                    is_ld: wb_r.s0.is_mem & (wb_r.s0.rf_wdata_sel == 2'b01),
-                   rf_waddr: wb_r.s0.rf_waddr, rf_wdata: wb_nonload_data0};
+                   pdst: wb_r.s0.pdst, rf_wdata: wb_nonload_data0};
 assign wb_fwd1 = '{valid: wb_valid & wb_r.v1, rf_we: wb_r.s1.rf_we,
                    is_ld: wb_r.s1.is_mem & (wb_r.s1.rf_wdata_sel == 2'b01),
-                   rf_waddr: wb_r.s1.rf_waddr, rf_wdata: wb_nonload_data1};
+                   pdst: wb_r.s1.pdst, rf_wdata: wb_nonload_data1};
 
 endmodule

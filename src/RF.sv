@@ -16,10 +16,10 @@ module RF (
     input  is_to_rf_bus_t   IS_to_RF_BUS,
     output rf_to_ex_bus_t   RF_to_EX_BUS,
 
-    output wire   [ 4:0]    rf_raddr1,
-    output wire   [ 4:0]    rf_raddr2,
-    output wire   [ 4:0]    rf_raddr3,
-    output wire   [ 4:0]    rf_raddr4,
+    output preg_t           rf_raddr1,
+    output preg_t           rf_raddr2,
+    output preg_t           rf_raddr3,
+    output preg_t           rf_raddr4,
     input  wire   [31:0]    rf_rdata1,
     input  wire   [31:0]    rf_rdata2,
     input  wire   [31:0]    rf_rdata3,
@@ -36,45 +36,45 @@ module RF (
 reg            rf_valid;
 is_to_rf_bus_t rf_bus_r;
 
-id_to_rr_bus_t idp;
-assign idp = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus;
+rr_to_dp_bus_t renamed;
+assign renamed = rf_bus_r.dp_to_is_bus.rr_to_dp_bus;
 
 d_bus_t db0;
 d_bus_t db1;
-assign db0 = idp.s0.d_bus;
-assign db1 = idp.s1.d_bus;
+assign db0 = renamed.s0.id.d_bus;
+assign db1 = renamed.s1.id.d_bus;
 
-assign rf_raddr1 = db0.rj;
-assign rf_raddr2 = db0.src_reg_is_rd ? db0.rd : db0.rk;
-assign rf_raddr3 = db1.rj;
-assign rf_raddr4 = db1.src_reg_is_rd ? db1.rd : db1.rk;
+assign rf_raddr1 = renamed.s0.psrc1;
+assign rf_raddr2 = renamed.s0.psrc2;
+assign rf_raddr3 = renamed.s1.psrc1;
+assign rf_raddr4 = renamed.s1.psrc2;
 
 function automatic [31:0] forward(
-    input [ 4:0] addr,
+    input preg_t addr,
     input [31:0] raw,
     input fwd_bus_t e1, input fwd_bus_t e0,
     input fwd_bus_t w1, input fwd_bus_t w0,
     input fwd_bus_t c1, input fwd_bus_t c0
 );
-    if      (e1.valid & e1.rf_we & ~e1.is_ld & (e1.rf_waddr == addr) & (addr != 5'b0)) forward = e1.rf_wdata;
-    else if (e0.valid & e0.rf_we & ~e0.is_ld & (e0.rf_waddr == addr) & (addr != 5'b0)) forward = e0.rf_wdata;
-    else if (w1.valid & w1.rf_we & ~w1.is_ld & (w1.rf_waddr == addr) & (addr != 5'b0)) forward = w1.rf_wdata;
-    else if (w0.valid & w0.rf_we & ~w0.is_ld & (w0.rf_waddr == addr) & (addr != 5'b0)) forward = w0.rf_wdata;
-    else if (c1.valid & c1.rf_we &             (c1.rf_waddr == addr) & (addr != 5'b0)) forward = c1.rf_wdata;
-    else if (c0.valid & c0.rf_we &             (c0.rf_waddr == addr) & (addr != 5'b0)) forward = c0.rf_wdata;
+    if      (e1.valid & e1.rf_we & ~e1.is_ld & (e1.pdst == addr) & (addr != preg_t'(0))) forward = e1.rf_wdata;
+    else if (e0.valid & e0.rf_we & ~e0.is_ld & (e0.pdst == addr) & (addr != preg_t'(0))) forward = e0.rf_wdata;
+    else if (w1.valid & w1.rf_we & ~w1.is_ld & (w1.pdst == addr) & (addr != preg_t'(0))) forward = w1.rf_wdata;
+    else if (w0.valid & w0.rf_we & ~w0.is_ld & (w0.pdst == addr) & (addr != preg_t'(0))) forward = w0.rf_wdata;
+    else if (c1.valid & c1.rf_we &             (c1.pdst == addr) & (addr != preg_t'(0))) forward = c1.rf_wdata;
+    else if (c0.valid & c0.rf_we &             (c0.pdst == addr) & (addr != preg_t'(0))) forward = c0.rf_wdata;
     else                                                                               forward = raw;
 endfunction
 
 function automatic [31:0] forward_no_ex(
-    input [ 4:0] addr,
+    input preg_t addr,
     input [31:0] raw,
     input fwd_bus_t w1, input fwd_bus_t w0,
     input fwd_bus_t c1, input fwd_bus_t c0
 );
-    if      (w1.valid & w1.rf_we & ~w1.is_ld & (w1.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = w1.rf_wdata;
-    else if (w0.valid & w0.rf_we & ~w0.is_ld & (w0.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = w0.rf_wdata;
-    else if (c1.valid & c1.rf_we &             (c1.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = c1.rf_wdata;
-    else if (c0.valid & c0.rf_we &             (c0.rf_waddr == addr) & (addr != 5'b0)) forward_no_ex = c0.rf_wdata;
+    if      (w1.valid & w1.rf_we & ~w1.is_ld & (w1.pdst == addr) & (addr != preg_t'(0))) forward_no_ex = w1.rf_wdata;
+    else if (w0.valid & w0.rf_we & ~w0.is_ld & (w0.pdst == addr) & (addr != preg_t'(0))) forward_no_ex = w0.rf_wdata;
+    else if (c1.valid & c1.rf_we &             (c1.pdst == addr) & (addr != preg_t'(0))) forward_no_ex = c1.rf_wdata;
+    else if (c0.valid & c0.rf_we &             (c0.pdst == addr) & (addr != preg_t'(0))) forward_no_ex = c0.rf_wdata;
     else                                                                               forward_no_ex = raw;
 endfunction
 
@@ -95,9 +95,9 @@ wire [31:0] mul_rj1   = forward_no_ex(rf_raddr3, rf_rdata3,
 wire [31:0] mul_rkd1  = forward_no_ex(rf_raddr4, rf_rdata4,
                                      wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
 
-function automatic exload_hit(input fwd_bus_t ld, input need, input [4:0] addr);
-    exload_hit = ld.valid & ld.rf_we & ld.is_ld & (ld.rf_waddr != 5'b0) &
-                 need & (ld.rf_waddr == addr);
+function automatic exload_hit(input fwd_bus_t ld, input need, input preg_t addr);
+    exload_hit = ld.valid & ld.rf_we & ld.is_ld & (ld.pdst != preg_t'(0)) &
+                 need & (ld.pdst == addr);
 endfunction
 
 // 乘法器输入寄存器原本由“EX ALU -> RF 六路旁路 -> DSP 输入”在同一拍
@@ -105,10 +105,10 @@ endfunction
 // ALU-to-MUL RAW 依赖互锁一拍，改从 WB 旁路取数；普通 ALU 依赖仍保持
 // 零气泡。load/branch-paired-slot1 已由 is_ld 语义覆盖，无需重复判断。
 function automatic exwrite_hit(input fwd_bus_t producer,
-                               input need, input [4:0] addr);
+                               input need, input preg_t addr);
     exwrite_hit = producer.valid & producer.rf_we & ~producer.is_ld &
-                  (producer.rf_waddr != 5'b0) & need &
-                  (producer.rf_waddr == addr);
+                  (producer.pdst != preg_t'(0)) & need &
+                  (producer.pdst == addr);
 endfunction
 
 wire lu0 = exload_hit(ex_fwd0, db0.need_rj,  rf_raddr1) |
@@ -128,13 +128,13 @@ wire lu1 = exload_hit(ex_fwd0, db1.need_rj,  rf_raddr3) |
            exload_hit(wb_fwd0, db1.need_rkd, rf_raddr4) |
            exload_hit(wb_fwd1, db1.need_rkd, rf_raddr4);
 
-wire load_use   = lu0 | (idp.v1 & lu1);
+wire load_use   = lu0 | (renamed.v1 & lu1);
 wire mul_dep0 = db0.is_mul &
                 (exwrite_hit(ex_fwd0, db0.need_rj,  rf_raddr1) |
                  exwrite_hit(ex_fwd1, db0.need_rj,  rf_raddr1) |
                  exwrite_hit(ex_fwd0, db0.need_rkd, rf_raddr2) |
                  exwrite_hit(ex_fwd1, db0.need_rkd, rf_raddr2));
-wire mul_dep1 = idp.v1 & db1.is_mul &
+wire mul_dep1 = renamed.v1 & db1.is_mul &
                 (exwrite_hit(ex_fwd0, db1.need_rj,  rf_raddr3) |
                  exwrite_hit(ex_fwd1, db1.need_rj,  rf_raddr3) |
                  exwrite_hit(ex_fwd0, db1.need_rkd, rf_raddr4) |
@@ -156,34 +156,36 @@ end
 
 assign RF_to_EX_BUS = '{
     s0: '{
-        pc: idp.s0.pc, inst: idp.s0.inst, imm: db0.imm, alu_op: db0.alu_op,
-        alu_src1: db0.src1_is_pc ? idp.s0.pc : fwd_rj0,
+        pc: renamed.s0.id.pc, inst: renamed.s0.id.inst, imm: db0.imm, alu_op: db0.alu_op,
+        alu_src1: db0.src1_is_pc ? renamed.s0.id.pc : fwd_rj0,
         alu_src2: db0.src2_is_imm ? db0.imm : fwd_rkd0,
         mul_src1: mul_rj0, mul_src2: mul_rkd0,
         rkd_value: fwd_rkd0,
         is_mul: db0.is_mul, is_cpucfg: db0.is_cpucfg,
         is_branch: db0.is_branch, inst_jirl: db0.inst_jirl,
         inst_beq: db0.inst_beq, inst_bne: db0.inst_bne,
-        bp_taken: idp.s0.bp_taken, bp_target: idp.s0.bp_target,
+        bp_taken: renamed.s0.id.bp_taken, bp_target: renamed.s0.id.bp_target,
         is_ld: db0.is_ld, is_st: db0.is_st, is_st_b: db0.is_st_b,
         ld_width: db0.ld_width, ld_ext_signed: db0.ld_ext_signed,
-        rf_wdata_sel: db0.rf_wdata_sel, rf_we: db0.rf_we, rf_waddr: db0.rf_waddr
+        rf_wdata_sel: db0.rf_wdata_sel, rf_we: db0.rf_we, rf_waddr: db0.rf_waddr,
+        pdst: renamed.s0.pdst, old_pdst: renamed.s0.old_pdst
     },
     s1: '{
-        pc: idp.s1.pc, inst: idp.s1.inst, imm: db1.imm, alu_op: db1.alu_op,
-        alu_src1: db1.src1_is_pc ? idp.s1.pc : fwd_rj1,
+        pc: renamed.s1.id.pc, inst: renamed.s1.id.inst, imm: db1.imm, alu_op: db1.alu_op,
+        alu_src1: db1.src1_is_pc ? renamed.s1.id.pc : fwd_rj1,
         alu_src2: db1.src2_is_imm ? db1.imm : fwd_rkd1,
         mul_src1: mul_rj1, mul_src2: mul_rkd1,
         rkd_value: fwd_rkd1,
         is_mul: db1.is_mul, is_cpucfg: db1.is_cpucfg,
         is_branch: db1.is_branch, inst_jirl: db1.inst_jirl,
         inst_beq: db1.inst_beq, inst_bne: db1.inst_bne,
-        bp_taken: idp.s1.bp_taken, bp_target: idp.s1.bp_target,
+        bp_taken: renamed.s1.id.bp_taken, bp_target: renamed.s1.id.bp_target,
         is_ld: db1.is_ld, is_st: db1.is_st, is_st_b: db1.is_st_b,
         ld_width: db1.ld_width, ld_ext_signed: db1.ld_ext_signed,
-        rf_wdata_sel: db1.rf_wdata_sel, rf_we: db1.rf_we, rf_waddr: db1.rf_waddr
+        rf_wdata_sel: db1.rf_wdata_sel, rf_we: db1.rf_we, rf_waddr: db1.rf_waddr,
+        pdst: renamed.s1.pdst, old_pdst: renamed.s1.old_pdst
     },
-    v1: idp.v1
+    v1: renamed.v1
 };
 
 endmodule

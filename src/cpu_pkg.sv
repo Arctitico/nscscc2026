@@ -4,13 +4,18 @@
 // 本文件集中定义 9 级流水线（IF ID RR DP IS RF EX WB CM）各级之间传递的
 // packed struct 总线。新增字段时改这里并同步上下游模块。
 //
-// 当前为「顺序双发射」：每级承载一个 2 槽 bundle，slot0 程序序在前，
-// slot1 在后，并始终保持 v1 => v0。XX_to_YY_valid 表示 slot0/整组有效，
-// slot1 的有效性由 bundle 中的 v1 携带。RR / DP 仍是直通缓冲，IS 负责保守的
-// co-issue/拆分；未来乱序化时再扩展重命名 tag 和发射队列信息。
+// 当前为「顺序双发射 + 物理 tag 接口」：每级承载一个 2 槽 bundle，slot0
+// 程序序在前，slot1 在后，并始终保持 v1 => v0。RR 生成 6-bit 物理源/目的
+// tag（当前先用同名映射），DP 是两项 FIFO，IS 仍负责保守 co-issue/拆分。
 // ============================================================================
 
 package cpu_pkg;
+
+localparam int unsigned ARCH_REG_COUNT = 32;
+localparam int unsigned PREG_COUNT      = 64;
+localparam int unsigned PREG_BITS       = $clog2(PREG_COUNT);
+
+typedef logic [PREG_BITS-1:0] preg_t;
 
 // ---------------------------------------------------------------------------
 // alu_op 编码（12 位 one-hot），必须与 alu.sv 中的 OP_* 常量一致：
@@ -68,6 +73,17 @@ typedef struct packed {
     logic [31:0] bp_target;
 } id_slot_t;
 
+// RR 固化的物理寄存器接口。第一增量先采用 ARF 同名映射（pN=N），
+// 但从 RR 之后只用物理 tag 做相关判断和前递。启用真实分配时只需替换
+// RR 内的映射来源，不再改写 DP/IS/RF/EX/WB/CM 的总线形状。
+typedef struct packed {
+    id_slot_t id;
+    preg_t    psrc1;
+    preg_t    psrc2;
+    preg_t    pdst;
+    preg_t    old_pdst;
+} rr_slot_t;
+
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
@@ -98,6 +114,8 @@ typedef struct packed {
     logic [ 1:0] rf_wdata_sel;
     logic        rf_we;
     logic [ 4:0] rf_waddr;
+    preg_t       pdst;
+    preg_t       old_pdst;
 } rf_ex_slot_t;
 
 typedef struct packed {
@@ -111,6 +129,8 @@ typedef struct packed {
     logic [ 1:0] rf_wdata_sel;
     logic        rf_we;
     logic [ 4:0] rf_waddr;
+    preg_t       pdst;
+    preg_t       old_pdst;
 } ex_wb_slot_t;
 
 typedef struct packed {
@@ -119,6 +139,8 @@ typedef struct packed {
     logic [31:0] rf_wdata;
     logic        rf_we;
     logic [ 4:0] rf_waddr;
+    preg_t       pdst;
+    preg_t       old_pdst;
 } wb_cm_slot_t;
 
 // ===================== 成对级间总线 =====================
@@ -135,7 +157,9 @@ typedef struct packed {
 } id_to_rr_bus_t;
 
 typedef struct packed {
-    id_to_rr_bus_t id_to_rr_bus;
+    rr_slot_t s0;
+    rr_slot_t s1;
+    logic     v1;
 } rr_to_dp_bus_t;
 
 typedef struct packed {
@@ -171,7 +195,7 @@ typedef struct packed {
     logic        valid;
     logic        rf_we;
     logic        is_ld;        // EX/WB 可置 1；CM 恒 0
-    logic [ 4:0] rf_waddr;
+    preg_t       pdst;
     logic [31:0] rf_wdata;
 } fwd_bus_t;
 
