@@ -1,8 +1,8 @@
 // ============================================================================
 // Execute 2 / Completion：等待乘法器和 D-cache 响应，生成最终写回数据。
 //
-// 阶段一仍保证 bundle 中不会同时出现 mul 与 mem，因此 ready_go 保持单一
-// 长延迟源选择；后续扩大发射矩阵时在这里加入逐槽 sticky completion。
+// 一个 bundle 可以同时含一个 mul 和一个 mem。两者可能在不同拍完成，因此
+// 分别锁存先到的完成状态及载荷；只有 s0/s1（有效时）都完成才向 WB 前进。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -47,6 +47,11 @@ wire ex2_mul1      = ex2_r.v1 & s1.is_mul;
 wire ex2_has_mul   = s0.is_mul | ex2_mul1;
 wire ex2_has_mem   = s0.is_mem | (ex2_r.v1 & s1.is_mem);
 
+reg         s0_done_q;
+reg         s1_done_q;
+reg [31:0]  mul_result_q;
+reg [31:0]  mem_result_q;
+
 wire        mul_in_valid;
 wire        mul_in_ready;
 wire        mul_out_valid;
@@ -54,9 +59,15 @@ wire        mul_out_ready;
 wire [31:0] mul_low;
 wire [31:0] mul_high_unused;
 
-wire ex2_ready_go = ex2_has_mul ? mul_out_valid
-                    : ex2_has_mem ? data_ok
-                                  : 1'b1;
+wire s0_done_now = (~s0.is_mul & ~s0.is_mem) |
+                   (s0.is_mul & mul_out_valid) |
+                   (s0.is_mem & data_ok);
+wire s1_done_now = (~s1.is_mul & ~s1.is_mem) |
+                   (s1.is_mul & mul_out_valid) |
+                   (s1.is_mem & data_ok);
+wire s0_ready_go = s0_done_q | s0_done_now;
+wire s1_ready_go = ~ex2_r.v1 | s1_done_q | s1_done_now;
+wire ex2_ready_go = s0_ready_go & s1_ready_go;
 assign EX2_to_WB_valid = ex2_valid & ex2_ready_go;
 wire ex2_fire = EX2_to_WB_valid & WB_allow_in;
 wire ex2_slot_allow = ~ex2_valid | ex2_fire;
@@ -64,7 +75,8 @@ assign EX2_allow_in = ex2_slot_allow &
                       (~EX1_to_EX2_valid | ~incoming_mul | mul_in_ready);
 
 assign mul_in_valid = EX1_to_EX2_valid & EX2_allow_in & incoming_mul;
-assign mul_out_ready = ex2_fire & ex2_has_mul;
+// 结果一出现就接收；若另一长延迟单元尚未完成，则在本级锁存保存。
+assign mul_out_ready = ex2_valid & ex2_has_mul;
 
 mul u_mul (
     .clk(clk), .reset(reset),
@@ -85,6 +97,27 @@ end
 
 always @(posedge clk) begin
     if (EX1_to_EX2_valid & EX2_allow_in) ex2_r <= EX1_to_EX2_BUS;
+end
+
+always @(posedge clk) begin
+    if (reset) begin
+        s0_done_q <= 1'b0;
+        s1_done_q <= 1'b0;
+    end
+    else if (EX2_allow_in) begin
+        s0_done_q <= 1'b0;
+        s1_done_q <= 1'b0;
+    end
+    else begin
+        if (ex2_valid & s0_done_now)
+            s0_done_q <= 1'b1;
+        if (ex2_valid & ex2_r.v1 & s1_done_now)
+            s1_done_q <= 1'b1;
+        if (ex2_valid & ex2_has_mul & mul_out_valid)
+            mul_result_q <= mul_low;
+        if (ex2_valid & ex2_has_mem & data_ok)
+            mem_result_q <= data_sram_rdata;
+    end
 end
 
 function automatic [31:0] load_data(input ex1_ex2_slot_t w,
@@ -115,8 +148,16 @@ function automatic [31:0] write_data(input ex1_ex2_slot_t w,
     endcase
 endfunction
 
-wire [31:0] rf_wdata0 = write_data(s0, data_sram_rdata, mul_low);
-wire [31:0] rf_wdata1 = write_data(s1, data_sram_rdata, mul_low);
+wire mul_saved = (s0.is_mul & s0_done_q) |
+                 (ex2_r.v1 & s1.is_mul & s1_done_q);
+wire mem_saved = (s0.is_mem & s0_done_q) |
+                 (ex2_r.v1 & s1.is_mem & s1_done_q);
+wire mul_complete = ~ex2_has_mul | mul_saved | mul_out_valid;
+wire mem_complete = ~ex2_has_mem | mem_saved | data_ok;
+wire [31:0] mem_result = mem_saved ? mem_result_q : data_sram_rdata;
+wire [31:0] mul_result = mul_saved ? mul_result_q : mul_low;
+wire [31:0] rf_wdata0 = write_data(s0, mem_result, mul_result);
+wire [31:0] rf_wdata1 = write_data(s1, mem_result, mul_result);
 
 assign EX2_to_WB_BUS = '{
     s0: '{pc: s0.pc, inst: s0.inst, rf_wdata: rf_wdata0,
@@ -128,14 +169,16 @@ assign EX2_to_WB_BUS = '{
 
 assign ex2_fwd0 = '{valid: ex2_v0,
                     rf_we: s0.rf_we,
-                    is_ld: s0.is_mem | (s0.is_mul & ~mul_out_valid),
+                    is_ld: (s0.is_mem & ~mem_complete) |
+                           (s0.is_mul & ~mul_complete),
                     rf_waddr: s0.rf_waddr, rf_wdata: rf_wdata0};
 assign ex2_fwd1 = '{valid: ex2_v1,
                     rf_we: s1.rf_we,
-                    is_ld: s1.is_mem | (s1.is_mul & ~mul_out_valid),
+                    is_ld: (s1.is_mem & ~mem_complete) |
+                           (s1.is_mul & ~mul_complete),
                     rf_waddr: s1.rf_waddr, rf_wdata: rf_wdata1};
 
-assign perf_data_wait = ex2_valid & ex2_has_mem & ~data_ok;
-assign perf_mul_wait  = ex2_valid & ex2_has_mul & ~mul_out_valid;
+assign perf_data_wait = ex2_valid & ex2_has_mem & ~mem_complete;
+assign perf_mul_wait  = ex2_valid & ex2_has_mul & ~mul_complete;
 
 endmodule

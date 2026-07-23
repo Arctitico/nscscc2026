@@ -1,9 +1,9 @@
 // ============================================================================
-// Execute 1：双 ALU、双 AGU、slot0 分支解析与 D-cache 地址请求。
+// Execute 1：双 ALU、双 AGU、双槽分支解析与 D-cache 地址请求。
 //
 // 本阶段只在 EX2 能接收时发出访存请求，并把“地址已接受”和 bundle 入 EX2
-// 合并为同一次握手，保证每条访存只请求一次。当前阶段仍沿用保守发射矩阵：
-// 最多一条访存、分支只在 slot0、mul 只与独立普通 ALU 配对。
+// 合并为同一次握手，保证每条访存只请求一次。IS 保证一个 bundle 最多一个
+// 分支、一个乘法和一个访存，并禁止 slot0 分支携带年轻访存。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -71,7 +71,7 @@ endfunction
 wire [31:0] base_result0 = s0.is_cpucfg ? cpucfg(s0.alu_src1) : alu_result0;
 wire [31:0] base_result1 = s1.is_cpucfg ? cpucfg(s1.alu_src1) : alu_result1;
 
-// ---------------- slot0 分支解析 ----------------
+// ---------------- 双槽分支解析；IS 保证至多一个分支 ----------------
 wire        eq0         = (s0.alu_src1 == s0.rkd_value);
 wire        uncond0     = s0.is_branch & ~s0.inst_beq & ~s0.inst_bne;
 wire        cond_taken0 = (s0.inst_beq & eq0) | (s0.inst_bne & ~eq0);
@@ -82,7 +82,21 @@ wire mispred0 = ex1_v0 & s0.is_branch &
                 ((s0.bp_taken ^ br_taken0) |
                  (br_taken0 & s0.bp_taken & (br_target0 != s0.bp_target)));
 
-assign redirect_target = br_taken0 ? br_target0 : (s0.pc + 32'd4);
+wire        eq1         = (s1.alu_src1 == s1.rkd_value);
+wire        uncond1     = s1.is_branch & ~s1.inst_beq & ~s1.inst_bne;
+wire        cond_taken1 = (s1.inst_beq & eq1) | (s1.inst_bne & ~eq1);
+wire        br_taken1   = ex1_v1 & (uncond1 | cond_taken1);
+wire [31:0] br_target1  = s1.inst_jirl ? (s1.alu_src1 + s1.imm)
+                                         : (s1.pc + s1.imm);
+wire mispred1 = ex1_v1 & s1.is_branch &
+                ((s1.bp_taken ^ br_taken1) |
+                 (br_taken1 & s1.bp_taken & (br_target1 != s1.bp_target)));
+
+wire branch_sel1 = ex1_v1 & s1.is_branch;
+wire branch_mispred = mispred0 | mispred1;
+assign redirect_target = branch_sel1
+                       ? (br_taken1 ? br_target1 : (s1.pc + 32'd4))
+                       : (br_taken0 ? br_target0 : (s0.pc + 32'd4));
 
 // ---------------- 单数据口；两套 AGU ----------------
 wire is_mem0 = ex1_v0 & (s0.is_ld | s0.is_st);
@@ -114,15 +128,17 @@ assign EX1_to_EX2_valid = ex1_valid & ex1_ready_go;
 wire ex1_fire = EX1_to_EX2_valid & EX2_allow_in;
 assign EX1_allow_in = ~ex1_valid | ex1_fire;
 
-assign redirect = mispred0 & ex1_fire;
+assign redirect = branch_mispred & ex1_fire;
 assign perf_data_wait = ex1_valid & has_mem & EX2_allow_in & ~data_addr_ok;
 assign perf_branch_mispred = redirect;
 
-assign bp_upd_en      = ex1_fire & ex1_v0 & s0.is_branch;
-assign bp_upd_pc      = s0.pc;
-assign bp_upd_taken   = br_taken0;
-assign bp_upd_is_cond = s0.inst_beq | s0.inst_bne;
-assign bp_upd_target  = br_target0;
+assign bp_upd_en      = ex1_fire &
+                        ((ex1_v0 & s0.is_branch) | (ex1_v1 & s1.is_branch));
+assign bp_upd_pc      = branch_sel1 ? s1.pc : s0.pc;
+assign bp_upd_taken   = branch_sel1 ? br_taken1 : br_taken0;
+assign bp_upd_is_cond = branch_sel1 ? (s1.inst_beq | s1.inst_bne)
+                                    : (s0.inst_beq | s0.inst_bne);
+assign bp_upd_target  = branch_sel1 ? br_target1 : br_target0;
 
 always @(posedge clk) begin
     if (reset | flush)        ex1_valid <= 1'b0;

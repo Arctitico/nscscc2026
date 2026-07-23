@@ -1,11 +1,11 @@
 // ============================================================================
 // IS —— 顺序双发射的 co-issue 决策点。
 //
-// 两槽同拍发射需要同时满足：最多一条访存、分支只能位于 slot0 且 slot1
-// 不是访存、slot1 不读 slot0 的目的寄存器；若含一个 mul.w，另一槽必须是
-// 独立纯 ALU。不满足时先发 slot0，再把 slot1 重贴为单槽发射。这样 EX 只
-// 保留一套分支解析，并避免 mispredict 组合结果进入 forwarding/allow-in。
-// 暂不与下一 bundle 做 compaction。
+// 五类指令：N=普通，MU=乘法，B=分支，ME=访存，S=特殊/强制单发。
+// 在只有一个乘法器、一个 LSU 的前提下，禁止 MU+MU、ME+ME、B+B；
+// slot0 B + slot1 ME 也禁止，避免年轻访存先于分支解析产生副作用。
+// 其余组合按 tmp.md 支持，包含 slot1 分支以及 MU+ME。若不能配对，先发
+// slot0，再把 slot1 重贴为单槽发射。暂不与下一 bundle 做 compaction。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -47,24 +47,28 @@ wire [ 4:0] s1_rkd    = db1.src_reg_is_rd ? db1.rd : db1.rk;
 wire        intra_raw = s0_writes &
                         ((db1.need_rj  & (db0.rf_waddr == db1.rj)) |
                          (db1.need_rkd & (db0.rf_waddr == s1_rkd)));
-wire both_mem = (db0.is_ld | db0.is_st) & (db1.is_ld | db1.is_st);
-wire slot1_mem = db1.is_ld | db1.is_st;
-// 分支只允许出现在执行槽 0。slot0 分支可以携带一个无访存的年轻
-// slot1；若误预测，EX 在提交边界精确杀掉 slot1。这样恢复常见的
-// branch+ALU 双发射，同时不再需要 slot1 分支解析器。
-wire branch_pair_ok = ~db1.is_branch & ~(db0.is_branch & slot1_mem);
-wire any_mul = db0.is_mul | db1.is_mul;
-wire one_mul = db0.is_mul ^ db1.is_mul;
-wire pure_alu0 = ~db0.is_mul & ~db0.is_cpucfg & ~db0.is_branch &
-                 ~db0.is_ld & ~db0.is_st;
-wire pure_alu1 = ~db1.is_mul & ~db1.is_cpucfg & ~db1.is_branch &
-                 ~db1.is_ld & ~db1.is_st;
-wire mul_pair_ok = ~any_mul |
-                   (one_mul & ((db0.is_mul & pure_alu1) |
-                               (db1.is_mul & pure_alu0)));
-wire mul_block = any_mul & ~mul_pair_ok;
+wire s0_mu = db0.is_mul;
+wire s1_mu = db1.is_mul;
+wire s0_b  = db0.is_branch;
+wire s1_b  = db1.is_branch;
+wire s0_me = db0.is_ld | db0.is_st;
+wire s1_me = db1.is_ld | db1.is_st;
+wire s0_s  = db0.is_cpucfg;
+wire s1_s  = db1.is_cpucfg;
 
-wire can_coissue = idp.v1 & ~both_mem & branch_pair_ok & mul_pair_ok & ~intra_raw;
+wire both_mul       = s0_mu & s1_mu;
+wire both_branch    = s0_b  & s1_b;
+wire both_mem       = s0_me & s1_me;
+wire branch_mem_bad = s0_b  & s1_me;
+wire any_special    = s0_s  | s1_s;
+
+wire type_pair_ok = ~any_special &
+                    ~both_mul &
+                    ~both_branch &
+                    ~both_mem &
+                    ~branch_mem_bad;
+
+wire can_coissue = idp.v1 & type_pair_ok & ~intra_raw;
 wire issuing_split = is_valid & ~slot1_pending & idp.v1 & ~can_coissue;
 wire group_last    = slot1_pending | ~issuing_split;
 
@@ -77,9 +81,9 @@ wire   is_fire        = IS_to_RF_valid & RF_allow_in;
 assign perf_coissue     = is_fire & ~slot1_pending & idp.v1 & can_coissue;
 assign perf_split_total = is_fire & issuing_split;
 assign perf_split_raw   = is_fire & issuing_split & intra_raw;
-assign perf_split_mem   = is_fire & issuing_split & both_mem;
-assign perf_split_mul   = is_fire & issuing_split & mul_block;
-assign perf_split_branch = is_fire & issuing_split & ~branch_pair_ok;
+assign perf_split_mem   = is_fire & issuing_split & (both_mem | branch_mem_bad);
+assign perf_split_mul   = is_fire & issuing_split & both_mul;
+assign perf_split_branch = is_fire & issuing_split & (both_branch | branch_mem_bad);
 
 always @(posedge clk) begin
     if (reset)            is_valid <= 1'b0;
