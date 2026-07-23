@@ -19,6 +19,7 @@ module EX (
 
     output wire             redirect,
     output wire   [31:0]    redirect_target,
+    output rob_idx_t        redirect_rob_idx,
 
     output wire             bp_upd_en,
     output wire   [31:0]    bp_upd_pc,
@@ -79,6 +80,7 @@ wire ex_v1_commit = ex_v1 & ~mispred0;
 wire ex_v1_eff = ex_v1_commit;
 
 assign redirect_target = br_taken0 ? br_target0 : (s0.pc + 32'd4);
+assign redirect_rob_idx = s0.rob_idx;
 
 // ---------------- 单数据口 ----------------
 wire is_mem0 = ex_v0 & (s0.is_ld | s0.is_st);
@@ -183,12 +185,12 @@ assign EX_to_WB_BUS = '{
           is_mem: is_mem0, addr_lo: mem_addr0[1:0],
           ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
           rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
-          pdst: s0.pdst, old_pdst: s0.old_pdst},
+          pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx},
     s1: '{pc: s1.pc, inst: s1.inst, alu_result: execute_result1,
           is_mem: is_mem1, addr_lo: mem_addr1[1:0],
           ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
           rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
-          pdst: s1.pdst, old_pdst: s1.old_pdst},
+          pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx},
     v1: ex_v1_eff
 };
 

@@ -1,9 +1,9 @@
 // ============================================================================
 // 双分配物理寄存器 free-list 原语
 //
-// p0-p31 初始保留给 ARF 同名映射，p32-p63 可分配。分配只观察拍初 bitmap，
-// 同拍归还的 tag 从下一拍起可再次分配，避免提交释放与 rename 形成组合环。
-// restore 用于后续分支 checkpoint/异常恢复；当前 RR 同名映射阶段尚不消费它。
+// p0-p31 初始承载 ARF 同名映射，p32-p63 初始可分配。旧同名映射在提交后
+// 也可回收，因此运行一段时间后 p1-p31 同样会进入分配池；只有 p0 永久保留。
+// 分配只观察拍初 bitmap，同拍归还的 tag 从下一拍起可再次分配。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -32,6 +32,8 @@ module preg_free_list (
 
 localparam logic [PREG_COUNT-1:0] INITIAL_FREE =
     {PREG_COUNT{1'b1}} << ARCH_REG_COUNT;
+localparam logic [PREG_COUNT-1:0] ALLOCATABLE =
+    {PREG_COUNT{1'b1}} & ~{{(PREG_COUNT-1){1'b0}}, 1'b1};
 
 logic [PREG_COUNT-1:0] free_bitmap_r;
 logic [PREG_COUNT-1:0] free_bitmap_n;
@@ -67,10 +69,10 @@ assign alloc_ready  = (~alloc_req0 | alloc_valid0) &
 always_comb begin
     free_bitmap_n = free_bitmap_r;
 
-    // 恒不允许回收 p0-p31；它们在初始/同名映射阶段是架构状态锚点。
-    if (free_valid0 && (free_preg0 >= preg_t'(ARCH_REG_COUNT)))
+    // p1-p31 的初始映射被覆盖后即可复用；p0 仍是常零寄存器锚点。
+    if (free_valid0 && (free_preg0 != preg_t'(0)))
         free_bitmap_n[free_preg0] = 1'b1;
-    if (free_valid1 && (free_preg1 >= preg_t'(ARCH_REG_COUNT)))
+    if (free_valid1 && (free_preg1 != preg_t'(0)))
         free_bitmap_n[free_preg1] = 1'b1;
 
     if (alloc_fire && alloc_ready) begin
@@ -83,7 +85,7 @@ always_ff @(posedge clk) begin
     if (reset)
         free_bitmap_r <= INITIAL_FREE;
     else if (restore_valid)
-        free_bitmap_r <= restore_bitmap & INITIAL_FREE;
+        free_bitmap_r <= restore_bitmap & ALLOCATABLE;
     else
         free_bitmap_r <= free_bitmap_n;
 end

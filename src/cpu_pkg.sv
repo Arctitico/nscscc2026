@@ -14,8 +14,12 @@ package cpu_pkg;
 localparam int unsigned ARCH_REG_COUNT = 32;
 localparam int unsigned PREG_COUNT      = 64;
 localparam int unsigned PREG_BITS       = $clog2(PREG_COUNT);
+localparam int unsigned ROB_COUNT       = 16;
+localparam int unsigned ROB_BITS        = $clog2(ROB_COUNT);
 
 typedef logic [PREG_BITS-1:0] preg_t;
+typedef logic [ROB_BITS-1:0]  rob_idx_t;
+typedef logic [ARCH_REG_COUNT-1:0][PREG_BITS-1:0] rat_snapshot_t;
 
 // ---------------------------------------------------------------------------
 // alu_op 编码（12 位 one-hot），必须与 alu.sv 中的 OP_* 常量一致：
@@ -82,6 +86,7 @@ typedef struct packed {
     preg_t    psrc2;
     preg_t    pdst;
     preg_t    old_pdst;
+    rob_idx_t rob_idx;
 } rr_slot_t;
 
 typedef struct packed {
@@ -116,6 +121,7 @@ typedef struct packed {
     logic [ 4:0] rf_waddr;
     preg_t       pdst;
     preg_t       old_pdst;
+    rob_idx_t    rob_idx;
 } rf_ex_slot_t;
 
 typedef struct packed {
@@ -131,6 +137,7 @@ typedef struct packed {
     logic [ 4:0] rf_waddr;
     preg_t       pdst;
     preg_t       old_pdst;
+    rob_idx_t    rob_idx;
 } ex_wb_slot_t;
 
 typedef struct packed {
@@ -141,6 +148,7 @@ typedef struct packed {
     logic [ 4:0] rf_waddr;
     preg_t       pdst;
     preg_t       old_pdst;
+    rob_idx_t    rob_idx;
 } wb_cm_slot_t;
 
 // ===================== 成对级间总线 =====================

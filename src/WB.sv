@@ -82,10 +82,12 @@ wire [31:0] wb_nonload_data1 = (wb_r.s1.rf_wdata_sel == 2'b10)
 assign WB_to_CM_BUS = '{
     s0: '{pc: wb_r.s0.pc, inst: wb_r.s0.inst, rf_wdata: rf_wdata0,
           rf_we: wb_r.s0.rf_we, rf_waddr: wb_r.s0.rf_waddr,
-          pdst: wb_r.s0.pdst, old_pdst: wb_r.s0.old_pdst},
+          pdst: wb_r.s0.pdst, old_pdst: wb_r.s0.old_pdst,
+          rob_idx: wb_r.s0.rob_idx},
     s1: '{pc: wb_r.s1.pc, inst: wb_r.s1.inst, rf_wdata: rf_wdata1,
           rf_we: wb_r.s1.rf_we, rf_waddr: wb_r.s1.rf_waddr,
-          pdst: wb_r.s1.pdst, old_pdst: wb_r.s1.old_pdst},
+          pdst: wb_r.s1.pdst, old_pdst: wb_r.s1.old_pdst,
+          rob_idx: wb_r.s1.rob_idx},
     v1: wb_r.v1
 };
 

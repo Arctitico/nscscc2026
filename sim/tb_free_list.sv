@@ -70,12 +70,21 @@ module tb_free_list;
         tick();
         check_condition(free_bitmap[32] && free_bitmap[33], "提交释放应归还 p32/p33");
 
+        free_preg0 = preg_t'(7);
+        free_valid1 = 1'b0;
+        tick();
+        check_condition(free_bitmap[7], "被覆盖的初始同名映射 p1-p31 应可回收");
+
+        free_preg0 = preg_t'(0);
+        tick();
+        check_condition(!free_bitmap[0], "p0 必须永久保留");
+
         free_valid0 = 1'b0;
         free_valid1 = 1'b0;
         alloc_req0 = 1'b1;
         alloc_req1 = 1'b1;
         #1;
-        check_condition(alloc_preg0 == preg_t'(32) && alloc_preg1 == preg_t'(33),
+        check_condition(alloc_preg0 == preg_t'(7) && alloc_preg1 == preg_t'(32),
                         "归还的低编号 tag 应按优先级重新分配");
 
         alloc_req0 = 1'b0;

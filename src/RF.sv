@@ -168,7 +168,8 @@ assign RF_to_EX_BUS = '{
         is_ld: db0.is_ld, is_st: db0.is_st, is_st_b: db0.is_st_b,
         ld_width: db0.ld_width, ld_ext_signed: db0.ld_ext_signed,
         rf_wdata_sel: db0.rf_wdata_sel, rf_we: db0.rf_we, rf_waddr: db0.rf_waddr,
-        pdst: renamed.s0.pdst, old_pdst: renamed.s0.old_pdst
+        pdst: renamed.s0.pdst, old_pdst: renamed.s0.old_pdst,
+        rob_idx: renamed.s0.rob_idx
     },
     s1: '{
         pc: renamed.s1.id.pc, inst: renamed.s1.id.inst, imm: db1.imm, alu_op: db1.alu_op,
@@ -183,7 +184,8 @@ assign RF_to_EX_BUS = '{
         is_ld: db1.is_ld, is_st: db1.is_st, is_st_b: db1.is_st_b,
         ld_width: db1.ld_width, ld_ext_signed: db1.ld_ext_signed,
         rf_wdata_sel: db1.rf_wdata_sel, rf_we: db1.rf_we, rf_waddr: db1.rf_waddr,
-        pdst: renamed.s1.pdst, old_pdst: renamed.s1.old_pdst
+        pdst: renamed.s1.pdst, old_pdst: renamed.s1.old_pdst,
+        rob_idx: renamed.s1.rob_idx
     },
     v1: renamed.v1
 };

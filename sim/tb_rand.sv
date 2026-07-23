@@ -222,6 +222,19 @@ module tb_rand;
         // ---- 结果 ----
         if (tptr < ncommit) begin
             $display("  FAIL 仅提交 %0d / %0d 条 (CPU 卡住或超时)", tptr, ncommit);
+            $display("  ROB head=%0d tail=%0d count=%0d head_valid=%0b head_ready=%0b pc=%08x",
+                     u_cpu.u_rob.head, u_cpu.u_rob.tail, u_cpu.u_rob.count,
+                     u_cpu.u_rob.entries[u_cpu.u_rob.head].valid,
+                     u_cpu.u_rob.entries[u_cpu.u_rob.head].ready,
+                     u_cpu.u_rob.entries[u_cpu.u_rob.head].pc);
+            $display("  PIPE rr=%0b dp_count=%0d is=%0b rf=%0b ex=%0b wb=%0b redirect=%0b",
+                     u_cpu.u_RR.rr_valid, u_cpu.u_DP.count, u_cpu.u_IS.is_valid,
+                     u_cpu.u_RF.rf_valid, u_cpu.u_EX.ex_valid, u_cpu.u_WB.wb_valid,
+                     u_cpu.redirect);
+            $display("  FRONT f1_pc=%08x f2_valid=%0b if_valid=%0b next_golden_pc=%08x",
+                     u_cpu.u_IF.pc_f1, u_cpu.u_IF.valid_f2, u_cpu.IF_to_ID_valid,
+                     g_pc[tptr]);
+            $display("  FREELIST bitmap=%016x", u_cpu.u_RR.free_bitmap);
             errors = errors + 1;
         end
         // 比对 scratch 内存

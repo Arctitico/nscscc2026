@@ -53,7 +53,8 @@ wire DP_to_IS_valid;
 wire IS_to_RF_valid;
 wire RF_to_EX_valid;
 wire EX_to_WB_valid;
-wire WB_to_CM_valid;
+wire WB_to_ROB_valid;
+wire ROB_to_CM_valid;
 
 wire ID_allow_in;
 wire RR_allow_in;
@@ -71,7 +72,8 @@ dp_to_is_bus_t DP_to_IS_BUS;
 is_to_rf_bus_t IS_to_RF_BUS;
 rf_to_ex_bus_t RF_to_EX_BUS;
 ex_to_wb_bus_t EX_to_WB_BUS;
-wb_to_cm_bus_t WB_to_CM_BUS;
+wb_to_cm_bus_t WB_to_ROB_BUS;
+wb_to_cm_bus_t ROB_to_CM_BUS;
 
 wire [31:0] bp_pc0;
 wire        bp_taken0, bp_taken1;
@@ -79,6 +81,7 @@ wire [31:0] bp_target0, bp_target1;
 
 wire        redirect;
 wire [31:0] redirect_target;
+rob_idx_t   redirect_rob_idx;
 wire        flush = redirect;
 
 wire        bp_upd_en;
@@ -96,6 +99,18 @@ wire [31:0] rf_rdata1, rf_rdata2, rf_rdata3, rf_rdata4;
 wire [ 3:0] rf_we1, rf_we2;
 preg_t rf_waddr1, rf_waddr2;
 wire [31:0] rf_wdata1, rf_wdata2;
+wire [ 3:0] cm_rf_we1, cm_rf_we2;
+preg_t cm_rf_waddr1, cm_rf_waddr2;
+wire [31:0] cm_rf_wdata1, cm_rf_wdata2;
+
+wire           rob_alloc_ready;
+rob_idx_t      rob_alloc_idx0, rob_alloc_idx1;
+wire           rob_alloc_fire;
+wire           rob_alloc_v1;
+rr_to_dp_bus_t rob_alloc_bus;
+rat_snapshot_t rob_alloc_rat0, rob_alloc_rat1;
+rat_snapshot_t recover_rat;
+wire [PREG_COUNT-1:0] recover_free_mask;
 
 wire        ic_req;
 wire [31:0] ic_addr;
@@ -173,7 +188,19 @@ RR u_RR (
     .RR_allow_in   (RR_allow_in   ),
     .RR_to_DP_valid(RR_to_DP_valid),
     .ID_to_RR_BUS  (ID_to_RR_BUS  ),
-    .RR_to_DP_BUS  (RR_to_DP_BUS  )
+    .RR_to_DP_BUS  (RR_to_DP_BUS  ),
+    .rob_alloc_ready(rob_alloc_ready),
+    .rob_alloc_idx0(rob_alloc_idx0),
+    .rob_alloc_idx1(rob_alloc_idx1),
+    .rob_alloc_fire(rob_alloc_fire),
+    .rob_alloc_v1 (rob_alloc_v1),
+    .rob_alloc_bus(rob_alloc_bus),
+    .rob_alloc_rat0(rob_alloc_rat0),
+    .rob_alloc_rat1(rob_alloc_rat1),
+    .recover_rat  (recover_rat),
+    .recover_free_mask(recover_free_mask),
+    .commit_valid (ROB_to_CM_valid),
+    .commit_bus   (ROB_to_CM_BUS)
 );
 
 DP u_DP (
@@ -234,29 +261,30 @@ RF u_RF (
 );
 
 EX u_EX (
-    .clk            (clk            ),
-    .reset          (reset          ),
-    .RF_to_EX_valid (RF_to_EX_valid ),
-    .WB_allow_in    (WB_allow_in    ),
-    .EX_allow_in    (EX_allow_in    ),
-    .EX_to_WB_valid (EX_to_WB_valid ),
-    .RF_to_EX_BUS   (RF_to_EX_BUS   ),
-    .EX_to_WB_BUS   (EX_to_WB_BUS   ),
-    .redirect       (redirect       ),
-    .redirect_target(redirect_target),
-    .bp_upd_en      (bp_upd_en      ),
-    .bp_upd_pc      (bp_upd_pc      ),
-    .bp_upd_taken   (bp_upd_taken   ),
-    .bp_upd_is_cond (bp_upd_is_cond ),
-    .bp_upd_target  (bp_upd_target  ),
-    .ex_fwd0        (ex_fwd0        ),
-    .ex_fwd1        (ex_fwd1        ),
-    .data_sram_en   (ex_data_sram_en   ),
-    .data_sram_we   (ex_data_sram_we   ),
-    .data_sram_size (ex_data_sram_size ),
-    .data_sram_addr (ex_data_sram_addr ),
-    .data_sram_wdata(ex_data_sram_wdata),
-    .data_addr_ok   (ex_data_addr_ok     ),
+    .clk            (clk                ),
+    .reset          (reset              ),
+    .RF_to_EX_valid (RF_to_EX_valid     ),
+    .WB_allow_in    (WB_allow_in        ),
+    .EX_allow_in    (EX_allow_in        ),
+    .EX_to_WB_valid (EX_to_WB_valid     ),
+    .RF_to_EX_BUS   (RF_to_EX_BUS       ),
+    .EX_to_WB_BUS   (EX_to_WB_BUS       ),
+    .redirect       (redirect           ),
+    .redirect_target(redirect_target    ),
+    .redirect_rob_idx(redirect_rob_idx  ),
+    .bp_upd_en      (bp_upd_en          ),
+    .bp_upd_pc      (bp_upd_pc          ),
+    .bp_upd_taken   (bp_upd_taken       ),
+    .bp_upd_is_cond (bp_upd_is_cond     ),
+    .bp_upd_target  (bp_upd_target      ),
+    .ex_fwd0        (ex_fwd0            ),
+    .ex_fwd1        (ex_fwd1            ),
+    .data_sram_en   (ex_data_sram_en    ),
+    .data_sram_we   (ex_data_sram_we    ),
+    .data_sram_size (ex_data_sram_size  ),
+    .data_sram_addr (ex_data_sram_addr  ),
+    .data_sram_wdata(ex_data_sram_wdata ),
+    .data_addr_ok   (ex_data_addr_ok    ),
 
     .perf_data_wait      (perf_ex_addr_wait_event   ),
     .perf_mul_wait       (perf_mul_wait_event       ),
@@ -264,33 +292,55 @@ EX u_EX (
 );
 
 WB u_WB (
-    .clk           (clk           ),
-    .reset         (reset         ),
-    .EX_to_WB_valid(EX_to_WB_valid),
-    .CM_allow_in   (CM_allow_in   ),
-    .WB_allow_in   (WB_allow_in   ),
-    .WB_to_CM_valid(WB_to_CM_valid),
-    .EX_to_WB_BUS  (EX_to_WB_BUS  ),
-    .WB_to_CM_BUS  (WB_to_CM_BUS  ),
-    .data_sram_rdata(ex_data_sram_rdata),
-    .data_ok       (ex_data_ok        ),
-    .wb_fwd0       (wb_fwd0       ),
-    .wb_fwd1       (wb_fwd1       ),
-    .perf_data_wait(perf_wb_data_wait_event)
+    .clk            (clk                    ),
+    .reset          (reset                  ),
+    .EX_to_WB_valid (EX_to_WB_valid         ),
+    .CM_allow_in    (CM_allow_in            ),
+    .WB_allow_in    (WB_allow_in            ),
+    .WB_to_CM_valid (WB_to_ROB_valid        ),
+    .EX_to_WB_BUS   (EX_to_WB_BUS           ),
+    .WB_to_CM_BUS   (WB_to_ROB_BUS          ),
+    .data_sram_rdata(ex_data_sram_rdata     ),
+    .data_ok        (ex_data_ok             ),
+    .wb_fwd0        (wb_fwd0                ),
+    .wb_fwd1        (wb_fwd1                ),
+    .perf_data_wait (perf_wb_data_wait_event)
+);
+
+rob u_rob (
+    .clk              (clk),
+    .reset            (reset),
+    .alloc_fire       (rob_alloc_fire),
+    .alloc_v1         (rob_alloc_v1),
+    .alloc_bus        (rob_alloc_bus),
+    .alloc_rat0       (rob_alloc_rat0),
+    .alloc_rat1       (rob_alloc_rat1),
+    .alloc_ready      (rob_alloc_ready),
+    .alloc_idx0       (rob_alloc_idx0),
+    .alloc_idx1       (rob_alloc_idx1),
+    .complete_valid   (WB_to_ROB_valid),
+    .complete_bus     (WB_to_ROB_BUS),
+    .recover_valid    (redirect),
+    .recover_idx      (redirect_rob_idx),
+    .recover_rat      (recover_rat),
+    .recover_free_mask(recover_free_mask),
+    .commit_allow     (CM_allow_in),
+    .commit_valid     (ROB_to_CM_valid),
+    .commit_bus       (ROB_to_CM_BUS)
 );
 
 CM u_CM (
     .clk               (clk               ),
     .reset             (reset             ),
-    .WB_to_CM_valid    (WB_to_CM_valid    ),
+    .WB_to_CM_valid    (ROB_to_CM_valid   ),
     .CM_allow_in       (CM_allow_in       ),
-    .WB_to_CM_BUS      (WB_to_CM_BUS      ),
-    .rf_we1            (rf_we1            ),
-    .rf_waddr1         (rf_waddr1         ),
-    .rf_wdata1         (rf_wdata1         ),
-    .rf_we2            (rf_we2            ),
-    .rf_waddr2         (rf_waddr2         ),
-    .rf_wdata2         (rf_wdata2         ),
+    .WB_to_CM_BUS      (ROB_to_CM_BUS     ),
+    .rf_we1            (cm_rf_we1         ),
+    .rf_waddr1         (cm_rf_waddr1      ),
+    .rf_wdata1         (cm_rf_wdata1      ),
+    .rf_we2            (cm_rf_we2         ),
+    .rf_waddr2         (cm_rf_waddr2      ),
+    .rf_wdata2         (cm_rf_wdata2      ),
     .cm_fwd0           (cm_fwd0           ),
     .cm_fwd1           (cm_fwd1           ),
     .debug_wb_pc       (debug_wb_pc       ),
@@ -304,6 +354,16 @@ CM u_CM (
     .debug_wb1_rf_wnum (debug_wb1_rf_wnum ),
     .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
 );
+
+// PRF 在完成时写入，ROB 只控制架构提交。这样结果离开 WB 后仍可由后续
+// 指令从 PRF 读取，不依赖额外的 ROB->RF 旁路。
+assign rf_we1    = {4{WB_to_ROB_valid & WB_to_ROB_BUS.s0.rf_we}};
+assign rf_waddr1 = WB_to_ROB_BUS.s0.pdst;
+assign rf_wdata1 = WB_to_ROB_BUS.s0.rf_wdata;
+assign rf_we2    = {4{WB_to_ROB_valid & WB_to_ROB_BUS.v1 &
+                      WB_to_ROB_BUS.s1.rf_we}};
+assign rf_waddr2 = WB_to_ROB_BUS.s1.pdst;
+assign rf_wdata2 = WB_to_ROB_BUS.s1.rf_wdata;
 
 // ============================ 寄存器堆 ============================
 regfile u_regfile (
@@ -430,9 +490,9 @@ always @(posedge clk) begin
         perf_branch_mispred <= 64'b0;
     end else begin
         perf_cycle <= perf_cycle + 64'd1;
-        if (!WB_to_CM_valid)
+        if (!ROB_to_CM_valid)
             perf_commit0 <= perf_commit0 + 64'd1;
-        else if (WB_to_CM_BUS.v1)
+        else if (ROB_to_CM_BUS.v1)
             perf_commit2 <= perf_commit2 + 64'd1;
         else
             perf_commit1 <= perf_commit1 + 64'd1;

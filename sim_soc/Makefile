@@ -14,7 +14,7 @@ CPU_SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR
            $(SRC_DIR)/icache.sv $(SRC_DIR)/write_buffer.sv $(SRC_DIR)/dcache.sv \
            $(SRC_DIR)/IF.sv $(SRC_DIR)/ID.sv $(SRC_DIR)/RR.sv $(SRC_DIR)/DP.sv \
            $(SRC_DIR)/IS.sv $(SRC_DIR)/RF.sv $(SRC_DIR)/EX.sv $(SRC_DIR)/WB.sv \
-           $(SRC_DIR)/CM.sv $(SRC_DIR)/mycpu_top.sv
+           $(SRC_DIR)/rob.sv $(SRC_DIR)/CM.sv $(SRC_DIR)/mycpu_top.sv
 
 SOC_SRCS = $(SOC_DIR)/sram_ctrl.sv $(SOC_DIR)/uart_mm.sv $(SOC_DIR)/mem_bridge.sv \
            $(SOC_DIR)/thinpad_top.sv $(ASYNC)
