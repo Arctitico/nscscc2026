@@ -115,6 +115,24 @@ reg [WAITERS-1:0] waiter_valid;
 reg [WORD_BITS-1:0] waiter_word [0:WAITERS-1];
 ex_wb_slot_t       waiter_meta [0:WAITERS-1];
 
+wire        wb_enq_ready;
+wire        wb_mem_req;
+wire [31:0] wb_mem_addr;
+wire [ 2:0] wb_mem_size;
+wire [ 3:0] wb_mem_strb;
+wire [31:0] wb_mem_data;
+wire        wb_empty;
+wire        wb_line_conflict;
+
+reg             uncached_valid;
+reg [31:0]      uncached_addr;
+reg [ 3:0]      uncached_we;
+reg [ 2:0]      uncached_size;
+reg [31:0]      uncached_wdata;
+ex_wb_slot_t    uncached_meta;
+wire uncached_store_active = uncached_valid & (|uncached_we);
+wire uncached_load_active  = uncached_valid & ~(|uncached_we);
+
 wire [IDX_BITS-1:0] mshr_idx = mshr_addr[OFF +: IDX_BITS];
 wire [TAG_BITS-1:0] mshr_tag =
     mshr_addr[32-TAG_BITS +: TAG_BITS];
@@ -164,15 +182,6 @@ wire input_same_mshr = mshr_valid &&
     (cpu_addr[31:OFF] == mshr_addr[31:OFF]);
 
 // ------------------------------ write buffer ------------------------------
-wire        wb_enq_ready;
-wire        wb_mem_req;
-wire [31:0] wb_mem_addr;
-wire [ 2:0] wb_mem_size;
-wire [ 3:0] wb_mem_strb;
-wire [31:0] wb_mem_data;
-wire        wb_empty;
-wire        wb_line_conflict;
-
 wire lookup_store_finish = lookup_valid & lookup_cacheable & lookup_store &
                            wb_enq_ready;
 
@@ -197,15 +206,6 @@ write_buffer u_write_buffer (
 );
 
 // ------------------------------ uncached ----------------------------------
-reg             uncached_valid;
-reg [31:0]      uncached_addr;
-reg [ 3:0]      uncached_we;
-reg [ 2:0]      uncached_size;
-reg [31:0]      uncached_wdata;
-ex_wb_slot_t    uncached_meta;
-
-wire uncached_store_active = uncached_valid & (|uncached_we);
-wire uncached_load_active  = uncached_valid & ~(|uncached_we);
 wire uncached_done = uncached_valid &
                      (uncached_store_active ? mem_wr_ok : mem_rd_ok);
 

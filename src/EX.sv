@@ -188,47 +188,83 @@ assign bp_upd_taken   = br_taken0;
 assign bp_upd_is_cond = s0.inst_beq | s0.inst_bne;
 assign bp_upd_target  = br_target0;
 
-assign data_sram_meta = mem_sel1 ? '{
-    pc: s1.pc, inst: s1.inst, alu_result: mem_addr1,
-    is_mem: 1'b1, addr_lo: mem_addr1[1:0],
-    ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
-    rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
-    pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx,
-    epoch: current_epoch
-} : '{
-    pc: s0.pc, inst: s0.inst, alu_result: mem_addr0,
-    is_mem: 1'b1, addr_lo: mem_addr0[1:0],
-    ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
-    rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
-    pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx,
-    epoch: current_epoch
-};
-
 wire [31:0] fwd_data0 = (s0.rf_wdata_sel == 2'b10) ? (s0.pc + 32'd4)
                                                        : execute_result0;
 wire [31:0] fwd_data1 = (s1.rf_wdata_sel == 2'b10) ? (s1.pc + 32'd4)
                                                        : execute_result1;
 wb_cm_slot_t fast_slot0;
 wb_cm_slot_t fast_slot1;
-assign fast_slot0 = fast0_valid ? '{
-    pc: s0.pc, inst: s0.inst, rf_wdata: fwd_data0,
-    rf_we: s0.rf_we, rf_waddr: s0.rf_waddr,
-    pdst: s0.pdst, old_pdst: s0.old_pdst, rob_idx: s0.rob_idx
-} : '{
-    pc: s1.pc, inst: s1.inst, rf_wdata: fwd_data1,
-    rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
-    pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx
-};
-assign fast_slot1 = '{
-    pc: s1.pc, inst: s1.inst, rf_wdata: fwd_data1,
-    rf_we: s1.rf_we, rf_waddr: s1.rf_waddr,
-    pdst: s1.pdst, old_pdst: s1.old_pdst, rob_idx: s1.rob_idx
-};
-assign fast_complete_bus = '{
-    s0: fast_slot0,
-    s1: fast_slot1,
-    v1: fast0_valid & fast1_valid
-};
+
+// Vivado 2019.2 XSIM 不支持把结构体赋值模式放进三元表达式。
+// 逐字段组合赋值保持相同硬件语义，并可供 Verilator/XSIM/综合共用。
+always_comb begin
+    data_sram_meta = '0;
+    if (mem_sel1) begin
+        data_sram_meta.pc            = s1.pc;
+        data_sram_meta.inst          = s1.inst;
+        data_sram_meta.alu_result    = mem_addr1;
+        data_sram_meta.addr_lo       = mem_addr1[1:0];
+        data_sram_meta.ld_width      = s1.ld_width;
+        data_sram_meta.ld_ext_signed = s1.ld_ext_signed;
+        data_sram_meta.rf_wdata_sel  = s1.rf_wdata_sel;
+        data_sram_meta.rf_we         = s1.rf_we;
+        data_sram_meta.rf_waddr      = s1.rf_waddr;
+        data_sram_meta.pdst          = s1.pdst;
+        data_sram_meta.old_pdst      = s1.old_pdst;
+        data_sram_meta.rob_idx       = s1.rob_idx;
+    end else begin
+        data_sram_meta.pc            = s0.pc;
+        data_sram_meta.inst          = s0.inst;
+        data_sram_meta.alu_result    = mem_addr0;
+        data_sram_meta.addr_lo       = mem_addr0[1:0];
+        data_sram_meta.ld_width      = s0.ld_width;
+        data_sram_meta.ld_ext_signed = s0.ld_ext_signed;
+        data_sram_meta.rf_wdata_sel  = s0.rf_wdata_sel;
+        data_sram_meta.rf_we         = s0.rf_we;
+        data_sram_meta.rf_waddr      = s0.rf_waddr;
+        data_sram_meta.pdst          = s0.pdst;
+        data_sram_meta.old_pdst      = s0.old_pdst;
+        data_sram_meta.rob_idx       = s0.rob_idx;
+    end
+    data_sram_meta.is_mem = 1'b1;
+    data_sram_meta.epoch  = current_epoch;
+
+    fast_slot0 = '0;
+    if (fast0_valid) begin
+        fast_slot0.pc        = s0.pc;
+        fast_slot0.inst      = s0.inst;
+        fast_slot0.rf_wdata  = fwd_data0;
+        fast_slot0.rf_we     = s0.rf_we;
+        fast_slot0.rf_waddr  = s0.rf_waddr;
+        fast_slot0.pdst      = s0.pdst;
+        fast_slot0.old_pdst  = s0.old_pdst;
+        fast_slot0.rob_idx   = s0.rob_idx;
+    end else begin
+        fast_slot0.pc        = s1.pc;
+        fast_slot0.inst      = s1.inst;
+        fast_slot0.rf_wdata  = fwd_data1;
+        fast_slot0.rf_we     = s1.rf_we;
+        fast_slot0.rf_waddr  = s1.rf_waddr;
+        fast_slot0.pdst      = s1.pdst;
+        fast_slot0.old_pdst  = s1.old_pdst;
+        fast_slot0.rob_idx   = s1.rob_idx;
+    end
+
+    fast_slot1 = '0;
+    fast_slot1.pc        = s1.pc;
+    fast_slot1.inst      = s1.inst;
+    fast_slot1.rf_wdata  = fwd_data1;
+    fast_slot1.rf_we     = s1.rf_we;
+    fast_slot1.rf_waddr  = s1.rf_waddr;
+    fast_slot1.pdst      = s1.pdst;
+    fast_slot1.old_pdst  = s1.old_pdst;
+    fast_slot1.rob_idx   = s1.rob_idx;
+
+    fast_complete_bus = '0;
+    fast_complete_bus.s0 = fast_slot0;
+    fast_complete_bus.s1 = fast_slot1;
+    fast_complete_bus.v1 = fast0_valid & fast1_valid;
+end
 
 assign ex_fwd0 = '{valid: ex_v0 & (~s0.is_mul | mul_out_valid),
                    rf_we: s0.rf_we, is_ld: s0.is_ld,
