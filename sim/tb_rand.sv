@@ -157,7 +157,7 @@ module tb_rand;
             if (|debug_wb1_rf_we) check_commit(debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
             if ($test$plusargs("trace_mem") && data_wr_req)
                 $display("[STORE] pc0=%08x pc1=%08x v1=%0b addr=%08x we=%x data=%08x",
-                         u_cpu.u_EX.s0.pc, u_cpu.u_EX.s1.pc, u_cpu.u_EX.ex_v1_eff,
+                         u_cpu.u_EX2.s0.pc, u_cpu.u_EX2.s1.pc, u_cpu.u_EX2.ex_v1_eff,
                          data_wr_addr, data_wr_strb, data_wr_data);
             if ($test$plusargs("trace_tail") && u_cpu.u_CM.cm_valid &&
                 (u_cpu.u_CM.cm_r.s0.pc >= 32'h1c000480))

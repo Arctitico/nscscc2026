@@ -1,7 +1,7 @@
 // ============================================================================
 // cpu_pkg.sv —— 级间总线与公共类型定义
 //
-// 本文件集中定义 8 级流水线（IF ID DP IS RF EX WB CM）各级之间传递的
+// 本文件集中定义 9 级流水线（IF ID DP IS RF EX1 EX2 WB CM）各级之间传递的
 // packed struct 总线。新增字段时改这里并同步上下游模块。
 //
 // 当前为「顺序双发射」：每级承载一个 2 槽 bundle，slot0 程序序在前，
@@ -52,7 +52,7 @@ typedef struct packed {
 } d_bus_t;
 
 // ===================== 单槽内容 =====================
-// bp_taken/bp_target：IF 取本指令时的预测，沿流水带到 EX 比对。
+// bp_taken/bp_target：IF 取本指令时的预测，沿流水带到 EX1 比对。
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
@@ -103,12 +103,23 @@ typedef struct packed {
 typedef struct packed {
     logic [31:0] pc;
     logic [31:0] inst;
-    logic [31:0] alu_result;   // 计算结果，加载/存储时为访存地址
-    logic        is_mem;       // 请求已被 Cache 接受，WB 等待 data_ok
+    logic [31:0] base_result;  // 普通 ALU/CPUCFG 结果；mul 在 EX2 覆盖
+    logic [31:0] mul_src1;
+    logic [31:0] mul_src2;
+    logic        is_mul;
+    logic        is_mem;       // 地址请求已被 Cache 接受，EX2 等待 data_ok
     logic [ 1:0] addr_lo;      // 访存地址低 2 位（字节/半字选择）
     logic [ 3:0] ld_width;
     logic        ld_ext_signed;
     logic [ 1:0] rf_wdata_sel;
+    logic        rf_we;
+    logic [ 4:0] rf_waddr;
+} ex1_ex2_slot_t;
+
+typedef struct packed {
+    logic [31:0] pc;
+    logic [31:0] inst;
+    logic [31:0] rf_wdata;     // EX2 已汇合 ALU/mul/load 后的最终写回数据
     logic        rf_we;
     logic [ 4:0] rf_waddr;
 } ex_wb_slot_t;
@@ -149,6 +160,12 @@ typedef struct packed {
 } rf_to_ex_bus_t;
 
 typedef struct packed {
+    ex1_ex2_slot_t s0;
+    ex1_ex2_slot_t s1;
+    logic          v1;
+} ex1_to_ex2_bus_t;
+
+typedef struct packed {
     ex_wb_slot_t s0;
     ex_wb_slot_t s1;
     logic        v1;
@@ -161,8 +178,7 @@ typedef struct packed {
 } wb_to_cm_bus_t;
 
 // 每个槽各自向 RF 广播一份前递信息。年轻槽优先级高于年长槽。
-// EX 的数据对加载指令无效；WB 等待 data_ok 时，加载数据同样无效。
-// 两级都用 is_ld 标记未就绪的 load，供 RF 触发 load-use 停顿。
+// EX1/EX2 用 is_ld 表示结果尚不可消费；WB 中的数据均已完成。
 typedef struct packed {
     logic        valid;
     logic        rf_we;

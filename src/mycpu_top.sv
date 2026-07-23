@@ -1,8 +1,8 @@
 // ============================================================================
 // mycpu_top 
 //
-// 八级流水：IF → ID → DP → IS → RF → EX → WB → CM
-//          取指 译码 分发 发射 读寄存器 执行 写回 提交
+// 九级流水：IF → ID → DP → IS → RF → EX1 → EX2 → WB → CM
+//          取指 译码 分发 发射 读寄存器 计算   完成  写回 提交
 //
 // 当前为两槽顺序双发射；DP 是三项非直通 FIFO，用于切断背压路径。
 // ============================================================================
@@ -50,15 +50,17 @@ wire IF_to_ID_valid;
 wire ID_to_DP_valid;
 wire DP_to_IS_valid;
 wire IS_to_RF_valid;
-wire RF_to_EX_valid;
-wire EX_to_WB_valid;
+wire RF_to_EX1_valid;
+wire EX1_to_EX2_valid;
+wire EX2_to_WB_valid;
 wire WB_to_CM_valid;
 
 wire ID_allow_in;
 wire DP_allow_in;
 wire IS_allow_in;
 wire RF_allow_in;
-wire EX_allow_in;
+wire EX1_allow_in;
+wire EX2_allow_in;
 wire WB_allow_in;
 wire CM_allow_in;
 
@@ -66,8 +68,9 @@ if_to_id_bus_t IF_to_ID_BUS;
 id_to_dp_bus_t ID_to_DP_BUS;
 dp_to_is_bus_t DP_to_IS_BUS;
 is_to_rf_bus_t IS_to_RF_BUS;
-rf_to_ex_bus_t RF_to_EX_BUS;
-ex_to_wb_bus_t EX_to_WB_BUS;
+rf_to_ex_bus_t RF_to_EX1_BUS;
+ex1_to_ex2_bus_t EX1_to_EX2_BUS;
+ex_to_wb_bus_t EX2_to_WB_BUS;
 wb_to_cm_bus_t WB_to_CM_BUS;
 
 wire [31:0] bp_pc0;
@@ -84,7 +87,8 @@ wire        bp_upd_taken;
 wire        bp_upd_is_cond;
 wire [31:0] bp_upd_target;
 
-fwd_bus_t ex_fwd0, ex_fwd1;
+fwd_bus_t ex1_fwd0, ex1_fwd1;
+fwd_bus_t ex2_fwd0, ex2_fwd1;
 fwd_bus_t wb_fwd0, wb_fwd1;
 fwd_bus_t cm_fwd0, cm_fwd1;
 
@@ -122,8 +126,8 @@ wire perf_dcache_hit_event;
 wire perf_dcache_miss_event;
 wire perf_wb_stall_event;
 wire perf_ex_addr_wait_event;
-wire perf_wb_data_wait_event;
-wire perf_data_wait_event = perf_ex_addr_wait_event | perf_wb_data_wait_event;
+wire perf_ex2_data_wait_event;
+wire perf_data_wait_event = perf_ex_addr_wait_event | perf_ex2_data_wait_event;
 wire perf_mul_wait_event;
 wire perf_branch_mispred_event;
 
@@ -197,11 +201,11 @@ RF u_RF (
     .reset         (reset         ),
     .flush         (flush         ),
     .IS_to_RF_valid(IS_to_RF_valid),
-    .EX_allow_in   (EX_allow_in   ),
+    .EX1_allow_in  (EX1_allow_in  ),
     .RF_allow_in   (RF_allow_in   ),
-    .RF_to_EX_valid(RF_to_EX_valid),
+    .RF_to_EX_valid(RF_to_EX1_valid),
     .IS_to_RF_BUS  (IS_to_RF_BUS  ),
-    .RF_to_EX_BUS  (RF_to_EX_BUS  ),
+    .RF_to_EX_BUS  (RF_to_EX1_BUS ),
     .rf_raddr1     (rf_raddr1     ),
     .rf_raddr2     (rf_raddr2     ),
     .rf_raddr3     (rf_raddr3     ),
@@ -210,23 +214,26 @@ RF u_RF (
     .rf_rdata2     (rf_rdata2     ),
     .rf_rdata3     (rf_rdata3     ),
     .rf_rdata4     (rf_rdata4     ),
-    .ex_fwd0       (ex_fwd0       ),
-    .ex_fwd1       (ex_fwd1       ),
+    .ex1_fwd0      (ex1_fwd0      ),
+    .ex1_fwd1      (ex1_fwd1      ),
+    .ex2_fwd0      (ex2_fwd0      ),
+    .ex2_fwd1      (ex2_fwd1      ),
     .wb_fwd0       (wb_fwd0       ),
     .wb_fwd1       (wb_fwd1       ),
     .cm_fwd0       (cm_fwd0       ),
     .cm_fwd1       (cm_fwd1       )
 );
 
-EX u_EX (
+EX1 u_EX1 (
     .clk            (clk            ),
     .reset          (reset          ),
-    .RF_to_EX_valid (RF_to_EX_valid ),
-    .WB_allow_in    (WB_allow_in    ),
-    .EX_allow_in    (EX_allow_in    ),
-    .EX_to_WB_valid (EX_to_WB_valid ),
-    .RF_to_EX_BUS   (RF_to_EX_BUS   ),
-    .EX_to_WB_BUS   (EX_to_WB_BUS   ),
+    .flush          (flush          ),
+    .RF_to_EX1_valid(RF_to_EX1_valid),
+    .EX2_allow_in   (EX2_allow_in   ),
+    .EX1_allow_in   (EX1_allow_in   ),
+    .EX1_to_EX2_valid(EX1_to_EX2_valid),
+    .RF_to_EX1_BUS  (RF_to_EX1_BUS  ),
+    .EX1_to_EX2_BUS (EX1_to_EX2_BUS ),
     .redirect       (redirect       ),
     .redirect_target(redirect_target),
     .bp_upd_en      (bp_upd_en      ),
@@ -234,8 +241,8 @@ EX u_EX (
     .bp_upd_taken   (bp_upd_taken   ),
     .bp_upd_is_cond (bp_upd_is_cond ),
     .bp_upd_target  (bp_upd_target  ),
-    .ex_fwd0        (ex_fwd0        ),
-    .ex_fwd1        (ex_fwd1        ),
+    .ex1_fwd0       (ex1_fwd0       ),
+    .ex1_fwd1       (ex1_fwd1       ),
     .data_sram_en   (ex_data_sram_en   ),
     .data_sram_we   (ex_data_sram_we   ),
     .data_sram_size (ex_data_sram_size ),
@@ -244,24 +251,37 @@ EX u_EX (
     .data_addr_ok   (ex_data_addr_ok     ),
 
     .perf_data_wait      (perf_ex_addr_wait_event   ),
-    .perf_mul_wait       (perf_mul_wait_event       ),
     .perf_branch_mispred (perf_branch_mispred_event )
+);
+
+EX2 u_EX2 (
+    .clk              (clk                    ),
+    .reset            (reset                  ),
+    .EX1_to_EX2_valid (EX1_to_EX2_valid       ),
+    .WB_allow_in      (WB_allow_in            ),
+    .EX2_allow_in     (EX2_allow_in           ),
+    .EX2_to_WB_valid  (EX2_to_WB_valid        ),
+    .EX1_to_EX2_BUS   (EX1_to_EX2_BUS         ),
+    .EX2_to_WB_BUS    (EX2_to_WB_BUS          ),
+    .ex2_fwd0         (ex2_fwd0               ),
+    .ex2_fwd1         (ex2_fwd1               ),
+    .data_sram_rdata  (ex_data_sram_rdata     ),
+    .data_ok          (ex_data_ok              ),
+    .perf_data_wait   (perf_ex2_data_wait_event),
+    .perf_mul_wait    (perf_mul_wait_event     )
 );
 
 WB u_WB (
     .clk           (clk           ),
     .reset         (reset         ),
-    .EX_to_WB_valid(EX_to_WB_valid),
+    .EX_to_WB_valid(EX2_to_WB_valid),
     .CM_allow_in   (CM_allow_in   ),
     .WB_allow_in   (WB_allow_in   ),
     .WB_to_CM_valid(WB_to_CM_valid),
-    .EX_to_WB_BUS  (EX_to_WB_BUS  ),
+    .EX_to_WB_BUS  (EX2_to_WB_BUS ),
     .WB_to_CM_BUS  (WB_to_CM_BUS  ),
-    .data_sram_rdata(ex_data_sram_rdata),
-    .data_ok       (ex_data_ok        ),
     .wb_fwd0       (wb_fwd0       ),
-    .wb_fwd1       (wb_fwd1       ),
-    .perf_data_wait(perf_wb_data_wait_event)
+    .wb_fwd1       (wb_fwd1       )
 );
 
 CM u_CM (

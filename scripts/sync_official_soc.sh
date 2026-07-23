@@ -15,14 +15,14 @@ fi
 sources=(
     tools.sv alu.sv mul.sv decoder.sv regfile.sv bpu.sv icache.sv
     write_buffer.sv dcache.sv
-    IF.sv ID.sv DP.sv IS.sv RF.sv EX.sv WB.sv CM.sv
+    IF.sv ID.sv DP.sv IS.sv RF.sv EX1.sv EX2.sv WB.sv CM.sv
     mycpu_top.sv cpu_axi_bridge.sv core_top.sv
 )
 
 # 分支切换后目标目录可能残留另一实现线独有的模块。只清理已知的级/乱序模块，
 # 不递归删除目标目录，避免碰到 README 或 CPU 自有 IP。
 stale_sources=(
-    RR.sv preg_free_list.sv rob.sv
+    RR.sv EX.sv preg_free_list.sv rob.sv
 )
 
 # The official scripts sort source paths. Prefixing the compilation-unit typedef
