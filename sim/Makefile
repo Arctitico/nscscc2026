@@ -28,6 +28,14 @@ free-list:
 		$(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/preg_free_list.sv tb_free_list.sv
 	./obj_dir/Vtb_free_list
 
+mshr:
+	verilator --binary --timing --top-module tb_dcache_mshr -o Vtb_dcache_mshr \
+		-Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-EOFNEWLINE \
+		-Wno-TIMESCALEMOD \
+		$(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/write_buffer.sv \
+		$(SRC_DIR)/dcache.sv tb_dcache_mshr.sv
+	./obj_dir/Vtb_dcache_mshr
+
 # ---- 随机指令 DiffTest ----
 # 用法: make rand            (默认 SEED=1)
 #       make rand SEED=42 N=200

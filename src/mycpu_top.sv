@@ -150,6 +150,11 @@ wire perf_icache_miss_event;
 wire perf_dcache_hit_event;
 wire perf_dcache_miss_event;
 wire perf_wb_stall_event;
+wire perf_hit_under_miss_event;
+wire perf_secondary_merge_event;
+wire perf_independent_miss_busy_event;
+wire perf_mshr_full_stall_event;
+wire perf_refill_tail_event;
 wire perf_ex_addr_wait_event;
 wire perf_wb_data_wait_event;
 wire perf_data_wait_event = perf_ex_addr_wait_event | perf_wb_data_wait_event;
@@ -332,6 +337,8 @@ WB u_WB (
     .reset             (reset                  ),
     .flush             (flush                  ),
     .current_epoch     (lsu_epoch              ),
+    .recover_idx       (redirect_rob_idx       ),
+    .rob_head_idx      (rob_head_idx           ),
     .data_resp_valid   (ex_data_ok             ),
     .data_resp_meta    (ex_data_resp_meta      ),
     .data_resp_rdata   (ex_data_sram_rdata     ),
@@ -446,6 +453,9 @@ bpu u_bpu (
 dcache u_dcache (
     .clk          (clk                   ),
     .reset        (reset                 ),
+    .flush        (flush                 ),
+    .recover_idx  (redirect_rob_idx      ),
+    .rob_head_idx (rob_head_idx          ),
     .cpu_req      (ex_data_sram_en       ),
     .cpu_we       (ex_data_sram_we       ),
     .cpu_size     (ex_data_sram_size     ),
@@ -470,7 +480,12 @@ dcache u_dcache (
     .inst_safe    (dcache_inst_safe      ),
     .perf_hit     (perf_dcache_hit_event ),
     .perf_miss    (perf_dcache_miss_event),
-    .perf_wb_stall(perf_wb_stall_event   )
+    .perf_wb_stall(perf_wb_stall_event   ),
+    .perf_hit_under_miss(perf_hit_under_miss_event),
+    .perf_secondary_merge(perf_secondary_merge_event),
+    .perf_independent_miss_busy(perf_independent_miss_busy_event),
+    .perf_mshr_full_stall(perf_mshr_full_stall_event),
+    .perf_refill_tail(perf_refill_tail_event)
 );
 
 // ============================ 指令缓存 ============================
@@ -519,6 +534,11 @@ reg [63:0] perf_icache_miss;
 reg [63:0] perf_dcache_hit;
 reg [63:0] perf_dcache_miss;
 reg [63:0] perf_wb_stall;
+reg [63:0] perf_hit_under_miss;
+reg [63:0] perf_secondary_merge;
+reg [63:0] perf_independent_miss_busy;
+reg [63:0] perf_mshr_full_stall;
+reg [63:0] perf_refill_tail;
 reg [63:0] perf_data_wait;
 reg [63:0] perf_mul_wait;
 reg [63:0] perf_branch_mispred;
@@ -541,6 +561,11 @@ always @(posedge clk) begin
         perf_dcache_hit     <= 64'b0;
         perf_dcache_miss    <= 64'b0;
         perf_wb_stall       <= 64'b0;
+        perf_hit_under_miss <= 64'b0;
+        perf_secondary_merge <= 64'b0;
+        perf_independent_miss_busy <= 64'b0;
+        perf_mshr_full_stall <= 64'b0;
+        perf_refill_tail    <= 64'b0;
         perf_data_wait      <= 64'b0;
         perf_mul_wait       <= 64'b0;
         perf_branch_mispred <= 64'b0;
@@ -564,6 +589,16 @@ always @(posedge clk) begin
         if (perf_dcache_hit_event)     perf_dcache_hit     <= perf_dcache_hit + 64'd1;
         if (perf_dcache_miss_event)    perf_dcache_miss    <= perf_dcache_miss + 64'd1;
         if (perf_wb_stall_event)       perf_wb_stall       <= perf_wb_stall + 64'd1;
+        if (perf_hit_under_miss_event)
+            perf_hit_under_miss <= perf_hit_under_miss + 64'd1;
+        if (perf_secondary_merge_event)
+            perf_secondary_merge <= perf_secondary_merge + 64'd1;
+        if (perf_independent_miss_busy_event)
+            perf_independent_miss_busy <= perf_independent_miss_busy + 64'd1;
+        if (perf_mshr_full_stall_event)
+            perf_mshr_full_stall <= perf_mshr_full_stall + 64'd1;
+        if (perf_refill_tail_event)
+            perf_refill_tail <= perf_refill_tail + 64'd1;
         if (perf_data_wait_event)      perf_data_wait      <= perf_data_wait + 64'd1;
         if (perf_mul_wait_event)       perf_mul_wait       <= perf_mul_wait + 64'd1;
         if (perf_branch_mispred_event) perf_branch_mispred <= perf_branch_mispred + 64'd1;

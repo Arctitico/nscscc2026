@@ -15,6 +15,8 @@ module WB (
     input  wire             reset,
     input  wire             flush,
     input  epoch_t          current_epoch,
+    input  rob_idx_t        recover_idx,
+    input  rob_idx_t        rob_head_idx,
 
     input  wire             data_resp_valid,
     input  ex_wb_slot_t     data_resp_meta,
@@ -29,6 +31,14 @@ module WB (
 reg          wb_valid;
 ex_wb_slot_t wb_meta;
 reg [31:0]   wb_rdata;
+
+function automatic logic younger_than_recover(input rob_idx_t idx);
+    logic [ROB_BITS:0] idx_age;
+    logic [ROB_BITS:0] recover_age;
+    idx_age = {1'b0, idx - rob_head_idx};
+    recover_age = {1'b0, recover_idx - rob_head_idx};
+    younger_than_recover = (idx_age > recover_age);
+endfunction
 
 always_ff @(posedge clk) begin
     if (reset) begin
@@ -65,7 +75,8 @@ wire [31:0] result = (wb_meta.rf_wdata_sel == 2'b01)
                    : wb_meta.alu_result;
 // flush/current_epoch 保留在接口上供后续断言与诊断；真正的选择性杀除
 // 必须在持有全部未决项的 D-cache/MSHR 中进行。
-assign mem_complete_valid = wb_valid;
+assign mem_complete_valid =
+    wb_valid & ~(flush && younger_than_recover(wb_meta.rob_idx));
 assign mem_complete_slot = '{
     pc: wb_meta.pc,
     inst: wb_meta.inst,
