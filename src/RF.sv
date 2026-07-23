@@ -36,8 +36,8 @@ module RF (
 reg            rf_valid;
 is_to_rf_bus_t rf_bus_r;
 
-id_to_rr_bus_t idp;
-assign idp = rf_bus_r.dp_to_is_bus.rr_to_dp_bus.id_to_rr_bus;
+id_to_dp_bus_t idp;
+assign idp = rf_bus_r.dp_to_is_bus.id_to_dp_bus;
 
 d_bus_t db0;
 d_bus_t db1;

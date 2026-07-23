@@ -1,13 +1,13 @@
 // ============================================================================
 // cpu_pkg.sv —— 级间总线与公共类型定义
 //
-// 本文件集中定义 9 级流水线（IF ID RR DP IS RF EX WB CM）各级之间传递的
+// 本文件集中定义 8 级流水线（IF ID DP IS RF EX WB CM）各级之间传递的
 // packed struct 总线。新增字段时改这里并同步上下游模块。
 //
 // 当前为「顺序双发射」：每级承载一个 2 槽 bundle，slot0 程序序在前，
 // slot1 在后，并始终保持 v1 => v0。XX_to_YY_valid 表示 slot0/整组有效，
-// slot1 的有效性由 bundle 中的 v1 携带。RR / DP 仍是直通缓冲，IS 负责保守的
-// co-issue/拆分；未来乱序化时再扩展重命名 tag 和发射队列信息。
+// slot1 的有效性由 bundle 中的 v1 携带。DP 是三项非直通 FIFO，IS 负责
+// 保守的 co-issue/拆分。本分支不保留乱序 rename 占位级。
 // ============================================================================
 
 package cpu_pkg;
@@ -132,14 +132,10 @@ typedef struct packed {
     id_slot_t s0;
     id_slot_t s1;
     logic     v1;
-} id_to_rr_bus_t;
+} id_to_dp_bus_t;
 
 typedef struct packed {
-    id_to_rr_bus_t id_to_rr_bus;
-} rr_to_dp_bus_t;
-
-typedef struct packed {
-    rr_to_dp_bus_t rr_to_dp_bus;
+    id_to_dp_bus_t id_to_dp_bus;
 } dp_to_is_bus_t;
 
 typedef struct packed {

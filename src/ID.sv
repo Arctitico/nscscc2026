@@ -9,12 +9,12 @@ module ID (
     input  wire             flush,
 
     input  wire             IF_to_ID_valid,
-    input  wire             RR_allow_in,
+    input  wire             DP_allow_in,
     output wire             ID_allow_in,
-    output wire             ID_to_RR_valid,
+    output wire             ID_to_DP_valid,
 
     input  if_to_id_bus_t   IF_to_ID_BUS,
-    output id_to_rr_bus_t   ID_to_RR_BUS
+    output id_to_dp_bus_t   ID_to_DP_BUS
 );
 
 reg            id_valid;
@@ -22,8 +22,8 @@ if_to_id_bus_t id_bus_r;
 
 // 这里不要化简，保留 1'b1 是为了可读性
 wire id_ready_go = 1'b1;
-assign ID_allow_in    = ~id_valid | (id_ready_go & RR_allow_in);
-assign ID_to_RR_valid =  id_valid &  id_ready_go;
+assign ID_allow_in    = ~id_valid | (id_ready_go & DP_allow_in);
+assign ID_to_DP_valid =  id_valid &  id_ready_go;
 
 always @(posedge clk) begin
     if (reset)            id_valid <= 1'b0;
@@ -40,7 +40,7 @@ d_bus_t d_bus1;
 decoder u_decoder0(.inst(id_bus_r.s0.inst), .d_bus(d_bus0));
 decoder u_decoder1(.inst(id_bus_r.s1.inst), .d_bus(d_bus1));
 
-assign ID_to_RR_BUS = '{
+assign ID_to_DP_BUS = '{
     s0: '{pc: id_bus_r.s0.pc, inst: id_bus_r.s0.inst, d_bus: d_bus0,
           bp_taken: id_bus_r.s0.bp_taken, bp_target: id_bus_r.s0.bp_target},
     s1: '{pc: id_bus_r.s1.pc, inst: id_bus_r.s1.inst, d_bus: d_bus1,

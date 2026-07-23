@@ -1,10 +1,10 @@
 // ============================================================================
 // mycpu_top 
 //
-// 九级流水：IF → ID → RR → DP → IS → RF → EX → WB → CM
-//          取指 译码 重命名 分发 发射 读寄存器 执行 写回 提交
+// 八级流水：IF → ID → DP → IS → RF → EX → WB → CM
+//          取指 译码 分发 发射 读寄存器 执行 写回 提交
 //
-// 当前为两槽顺序双发射；RR/DP 仍为后续乱序化保留的缓冲级。
+// 当前为两槽顺序双发射；DP 是三项非直通 FIFO，用于切断背压路径。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -47,8 +47,7 @@ module mycpu_top(
 wire reset = ~resetn;
 
 wire IF_to_ID_valid;
-wire ID_to_RR_valid;
-wire RR_to_DP_valid;
+wire ID_to_DP_valid;
 wire DP_to_IS_valid;
 wire IS_to_RF_valid;
 wire RF_to_EX_valid;
@@ -56,7 +55,6 @@ wire EX_to_WB_valid;
 wire WB_to_CM_valid;
 
 wire ID_allow_in;
-wire RR_allow_in;
 wire DP_allow_in;
 wire IS_allow_in;
 wire RF_allow_in;
@@ -65,8 +63,7 @@ wire WB_allow_in;
 wire CM_allow_in;
 
 if_to_id_bus_t IF_to_ID_BUS;
-id_to_rr_bus_t ID_to_RR_BUS;
-rr_to_dp_bus_t RR_to_DP_BUS;
+id_to_dp_bus_t ID_to_DP_BUS;
 dp_to_is_bus_t DP_to_IS_BUS;
 is_to_rf_bus_t IS_to_RF_BUS;
 rf_to_ex_bus_t RF_to_EX_BUS;
@@ -157,34 +154,22 @@ ID u_ID (
     .reset         (reset         ),
     .flush         (flush         ),
     .IF_to_ID_valid(IF_to_ID_valid),
-    .RR_allow_in   (RR_allow_in   ),
-    .ID_allow_in   (ID_allow_in   ),
-    .ID_to_RR_valid(ID_to_RR_valid),
-    .IF_to_ID_BUS  (IF_to_ID_BUS  ),
-    .ID_to_RR_BUS  (ID_to_RR_BUS  )
-);
-
-RR u_RR (
-    .clk           (clk           ),
-    .reset         (reset         ),
-    .flush         (flush         ),
-    .ID_to_RR_valid(ID_to_RR_valid),
     .DP_allow_in   (DP_allow_in   ),
-    .RR_allow_in   (RR_allow_in   ),
-    .RR_to_DP_valid(RR_to_DP_valid),
-    .ID_to_RR_BUS  (ID_to_RR_BUS  ),
-    .RR_to_DP_BUS  (RR_to_DP_BUS  )
+    .ID_allow_in   (ID_allow_in   ),
+    .ID_to_DP_valid(ID_to_DP_valid),
+    .IF_to_ID_BUS  (IF_to_ID_BUS  ),
+    .ID_to_DP_BUS  (ID_to_DP_BUS  )
 );
 
 DP u_DP (
     .clk           (clk           ),
     .reset         (reset         ),
     .flush         (flush         ),
-    .RR_to_DP_valid(RR_to_DP_valid),
+    .ID_to_DP_valid(ID_to_DP_valid),
     .IS_allow_in   (IS_allow_in   ),
     .DP_allow_in   (DP_allow_in   ),
     .DP_to_IS_valid(DP_to_IS_valid),
-    .RR_to_DP_BUS  (RR_to_DP_BUS  ),
+    .ID_to_DP_BUS  (ID_to_DP_BUS  ),
     .DP_to_IS_BUS  (DP_to_IS_BUS  )
 );
 

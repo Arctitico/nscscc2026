@@ -34,8 +34,8 @@ reg            is_valid;
 dp_to_is_bus_t is_bus_r;
 reg            slot1_pending;
 
-id_to_rr_bus_t idp;
-assign idp = is_bus_r.rr_to_dp_bus.id_to_rr_bus;
+id_to_dp_bus_t idp;
+assign idp = is_bus_r.id_to_dp_bus;
 
 d_bus_t db0;
 d_bus_t db1;
@@ -97,7 +97,7 @@ always @(posedge clk) begin
     else if (is_fire & slot1_pending)   slot1_pending <= 1'b0;
 end
 
-id_to_rr_bus_t out_idp;
+id_to_dp_bus_t out_idp;
 always_comb begin
     if (slot1_pending) begin
         out_idp.s0 = idp.s1;
@@ -112,6 +112,6 @@ always_comb begin
     end
 end
 
-assign IS_to_RF_BUS = '{dp_to_is_bus: '{rr_to_dp_bus: '{id_to_rr_bus: out_idp}}};
+assign IS_to_RF_BUS = '{dp_to_is_bus: '{id_to_dp_bus: out_idp}};
 
 endmodule

@@ -12,7 +12,7 @@ ASYNC   = ../../../nscscc2025/2025_nscscc_个人赛模版工程_la32r/thinpad_to
 CPU_SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR)/mul.sv \
            $(SRC_DIR)/decoder.sv $(SRC_DIR)/regfile.sv $(SRC_DIR)/bpu.sv \
            $(SRC_DIR)/icache.sv $(SRC_DIR)/write_buffer.sv $(SRC_DIR)/dcache.sv \
-           $(SRC_DIR)/IF.sv $(SRC_DIR)/ID.sv $(SRC_DIR)/RR.sv $(SRC_DIR)/DP.sv \
+           $(SRC_DIR)/IF.sv $(SRC_DIR)/ID.sv $(SRC_DIR)/DP.sv \
            $(SRC_DIR)/IS.sv $(SRC_DIR)/RF.sv $(SRC_DIR)/EX.sv $(SRC_DIR)/WB.sv \
            $(SRC_DIR)/CM.sv $(SRC_DIR)/mycpu_top.sv
 
