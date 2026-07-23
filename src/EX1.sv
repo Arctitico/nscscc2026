@@ -146,7 +146,9 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (RF_to_EX1_valid & EX1_allow_in) ex1_r <= RF_to_EX1_BUS;
+    // EX1 空闲/前进时即更新 payload；valid=0 时内容无关。不要把
+    // RF_to_EX1_valid（含 load-use/forwarding 判定）串到整条大总线的 CE。
+    if (EX1_allow_in) ex1_r <= RF_to_EX1_BUS;
 end
 
 assign EX1_to_EX2_BUS = '{

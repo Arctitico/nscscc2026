@@ -71,8 +71,10 @@ wire ex2_ready_go = s0_ready_go & s1_ready_go;
 assign EX2_to_WB_valid = ex2_valid & ex2_ready_go;
 wire ex2_fire = EX2_to_WB_valid & WB_allow_in;
 wire ex2_slot_allow = ~ex2_valid | ex2_fire;
-assign EX2_allow_in = ex2_slot_allow &
-                      (~EX1_to_EX2_valid | ~incoming_mul | mul_in_ready);
+// 乘法 token 与 EX2 bundle 一一对应：EX2 空闲时乘法器必为空；旧 bundle
+// fire 时，旧乘积要么当拍被消费，要么早已保存并消费。因此 EX2 能接收时
+// mul_in_ready 恒成立，无需把 incoming branch-kill/mul 选择串进 allow_in。
+assign EX2_allow_in = ex2_slot_allow;
 
 assign mul_in_valid = EX1_to_EX2_valid & EX2_allow_in & incoming_mul;
 // 结果一出现就接收；若另一长延迟单元尚未完成，则在本级锁存保存。
@@ -96,7 +98,8 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (EX1_to_EX2_valid & EX2_allow_in) ex2_r <= EX1_to_EX2_BUS;
+    // valid=0 时 payload 无关；只以本级 allow 作 CE，缩短大总线控制路径。
+    if (EX2_allow_in) ex2_r <= EX1_to_EX2_BUS;
 end
 
 always @(posedge clk) begin
