@@ -17,12 +17,17 @@ module tb_supervisor;
     wire        inst_ret_valid;
     wire [31:0] inst_ret_data;
     wire        inst_ret_last;
-    wire        data_sram_en;
-    wire [ 3:0] data_sram_we;
-    wire [31:0] data_sram_addr;
-    wire [31:0] data_sram_wdata;
-    wire [31:0] data_sram_rdata;
-    wire        data_ok;
+    wire        data_rd_req;
+    wire [ 2:0] data_rd_size;
+    wire [31:0] data_rd_addr;
+    wire [31:0] data_rd_data;
+    wire        data_rd_ok;
+    wire        data_wr_req;
+    wire [ 2:0] data_wr_size;
+    wire [31:0] data_wr_addr;
+    wire [ 3:0] data_wr_strb;
+    wire [31:0] data_wr_data;
+    wire        data_wr_ok;
     wire [31:0] debug_wb_pc;
     wire [ 3:0] debug_wb_rf_we;
     wire [ 4:0] debug_wb_rf_wnum;
@@ -57,10 +62,12 @@ module tb_supervisor;
         .inst_rd_req(inst_rd_req), .inst_rd_addr(inst_rd_addr),
         .inst_rd_rdy(inst_rd_rdy), .inst_ret_valid(inst_ret_valid),
         .inst_ret_data(inst_ret_data), .inst_ret_last(inst_ret_last),
-        .data_sram_en(data_sram_en), .data_sram_we(data_sram_we),
-        .data_sram_size(),
-        .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
-        .data_sram_rdata(data_sram_rdata), .data_ok(data_ok),
+        .data_rd_req(data_rd_req), .data_rd_size(data_rd_size),
+        .data_rd_addr(data_rd_addr), .data_rd_data(data_rd_data),
+        .data_rd_ok(data_rd_ok),
+        .data_wr_req(data_wr_req), .data_wr_size(data_wr_size),
+        .data_wr_addr(data_wr_addr), .data_wr_strb(data_wr_strb),
+        .data_wr_data(data_wr_data), .data_wr_ok(data_wr_ok),
         .debug_wb_pc(debug_wb_pc), .debug_wb_inst(), .debug_wb_rf_we(debug_wb_rf_we),
         .debug_wb_rf_wnum(debug_wb_rf_wnum), .debug_wb_rf_wdata(debug_wb_rf_wdata),
         .debug_wb1_pc(debug_wb1_pc), .debug_wb1_inst(), .debug_wb1_rf_we(debug_wb1_rf_we),
@@ -72,9 +79,12 @@ module tb_supervisor;
         .inst_rd_req(inst_rd_req), .inst_rd_addr(inst_rd_addr),
         .inst_rd_rdy(inst_rd_rdy), .inst_ret_valid(inst_ret_valid),
         .inst_ret_data(inst_ret_data), .inst_ret_last(inst_ret_last),
-        .data_sram_en(data_sram_en), .data_sram_we(data_sram_we),
-        .data_sram_addr(data_sram_addr), .data_sram_wdata(data_sram_wdata),
-        .data_sram_rdata(data_sram_rdata), .data_ok(data_ok),
+        .data_rd_req(data_rd_req), .data_rd_size(data_rd_size),
+        .data_rd_addr(data_rd_addr), .data_rd_data(data_rd_data),
+        .data_rd_ok(data_rd_ok),
+        .data_wr_req(data_wr_req), .data_wr_size(data_wr_size),
+        .data_wr_addr(data_wr_addr), .data_wr_strb(data_wr_strb),
+        .data_wr_data(data_wr_data), .data_wr_ok(data_wr_ok),
         .base_ram_addr(base_ram_addr), .base_ram_be_n(base_ram_be_n),
         .base_ram_ce_n(base_ram_ce_n), .base_ram_oe_n(base_ram_oe_n),
         .base_ram_we_n(base_ram_we_n), .base_ram_wdat(base_ram_wdat),
