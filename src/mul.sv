@@ -1,9 +1,9 @@
 // ============================================================================
-// 32 x 32 三级流水乘法器
+// 32 x 32 两级流水乘法器
 //
-// 流水级：输入寄存器 -> 乘法寄存器 -> 输出寄存器。无背压时每拍可接收
-// 一组新操作数；输出阻塞时冻结整条流水线并保持结果稳定。数据寄存器不带
-// 异步复位，便于 Vivado 将它们吸收到 DSP48E1 的 A/B、M、P 寄存器中。
+// 流水级：输入 A/B 寄存器 -> 乘积 P 寄存器。输入在 N 拍被接受，
+// out_valid 在 N+1 拍出现；输出阻塞时冻结整条流水线并保持结果稳定。
+// 数据寄存器不带异步复位，便于 Vivado 吸收到 DSP48E1 内部寄存器。
 // ============================================================================
 module mul (
     input  wire        clk,
@@ -22,12 +22,10 @@ module mul (
 );
 
 reg stage_a_valid;
-reg stage_m_valid;
 reg stage_p_valid;
 
 reg signed [32:0] operand_a_r;
 reg signed [32:0] operand_b_r;
-reg signed [65:0] product_m_r;
 reg signed [65:0] product_p_r;
 
 // 整体冻结可保证任意背压下每一级的 valid 与载荷保持对应。
@@ -41,13 +39,11 @@ assign c_high    = product_p_r[63:32];
 always @(posedge clk) begin
     if (reset) begin
         stage_a_valid <= 1'b0;
-        stage_m_valid <= 1'b0;
         stage_p_valid <= 1'b0;
     end
     else if (pipeline_advance) begin
         stage_a_valid <= in_valid;
-        stage_m_valid <= stage_a_valid;
-        stage_p_valid <= stage_m_valid;
+        stage_p_valid <= stage_a_valid;
     end
 end
 
@@ -59,9 +55,7 @@ always @(posedge clk) begin
             operand_b_r <= is_signed ? {b_in[31], b_in} : {1'b0, b_in};
         end
         if (stage_a_valid)
-            product_m_r <= operand_a_r * operand_b_r;
-        if (stage_m_valid)
-            product_p_r <= product_m_r;
+            product_p_r <= operand_a_r * operand_b_r;
     end
 end
 
