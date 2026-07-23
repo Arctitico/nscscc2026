@@ -1,11 +1,13 @@
 // ============================================================================
-// IS —— 顺序双发射的 co-issue 决策点。
+// IS —— 8 项整数发射队列
 //
-// 两槽同拍发射需要同时满足：最多一条访存、分支只能位于 slot0 且 slot1
-// 不是访存、slot1 不读 slot0 的目的寄存器；若含一个 mul.w，另一槽必须是
-// 独立纯 ALU。不满足时先发 slot0，再把 slot1 重贴为单槽发射。这样 EX 只
-// 保留一套分支解析，并避免 mispredict 组合结果进入 forwarding/allow-in。
-// 暂不与下一 bundle 做 compaction。
+// 纯 ALU 指令按物理源 tag 的 ready 状态唤醒，并可越过未就绪的更老纯
+// ALU，最多选择两条送往 RF。分支、乘法、访存和 cpucfg 作为保守屏障：
+// 它们只在成为队列最老项且源已就绪时单发，年轻纯 ALU 不越过屏障。
+//
+// 队列与 RF 之间使用一项 skid/hold：RF 可接收时选择结果直接进入 RF，
+// 背压时才登记并保持载荷。IS_allow_in 仍只由已登记的 IQ 占用数决定，
+// 不把 RF/EX/WB ready 组合传播回 DP。误预测冲刷 IQ 与 hold。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -22,95 +24,350 @@ module IS (
     input  dp_to_is_bus_t   DP_to_IS_BUS,
     output is_to_rf_bus_t   IS_to_RF_BUS,
 
+    input  rob_idx_t        rob_head_idx,
+    input  wire             rename_alloc_fire,
+    input  wire             rename_alloc_v1,
+    input  rr_to_dp_bus_t   rename_alloc_bus,
+    input  wire             complete_valid,
+    input  wb_to_cm_bus_t   complete_bus,
+    input  fwd_bus_t        ex_wakeup0,
+    input  fwd_bus_t        ex_wakeup1,
+
     output wire             perf_coissue,
     output wire             perf_split_total,
     output wire             perf_split_raw,
     output wire             perf_split_mem,
     output wire             perf_split_mul,
-    output wire             perf_split_branch
+    output wire             perf_split_branch,
+    output wire             perf_ooo_issue,
+    output wire             perf_iq_full
 );
 
-reg            is_valid;
-dp_to_is_bus_t is_bus_r;
-reg            slot1_pending;
+localparam int unsigned IQ_DEPTH = 8;
+localparam int unsigned IQ_BITS  = $clog2(IQ_DEPTH);
+localparam logic [3:0] IQ_DEPTH_W = 4'd8;
+localparam logic [ROB_BITS:0] ROB_DIST_END = {1'b1, {ROB_BITS{1'b0}}};
 
-rr_to_dp_bus_t renamed;
-assign renamed = is_bus_r.rr_to_dp_bus;
+rr_slot_t iq_entry [0:IQ_DEPTH-1];
+logic [IQ_DEPTH-1:0] iq_valid;
+logic [3:0]          count;
 
-d_bus_t db0;
-d_bus_t db1;
-assign db0 = renamed.s0.id.d_bus;
-assign db1 = renamed.s1.id.d_bus;
+// p0-p31 是复位后的初始架构映射；新分配目的 tag 在 rename 当拍清 ready，
+// WB 完成时再置 ready。释放 tag 的 ready 值无意义，下次分配会重新清零。
+logic [PREG_COUNT-1:0] preg_ready;
 
-wire        s0_writes = db0.rf_we & (renamed.s0.pdst != preg_t'(0));
-wire        intra_raw = s0_writes &
-                        ((db1.need_rj  & (renamed.s0.pdst == renamed.s1.psrc1)) |
-                         (db1.need_rkd & (renamed.s0.pdst == renamed.s1.psrc2)));
-wire both_mem = (db0.is_ld | db0.is_st) & (db1.is_ld | db1.is_st);
-wire slot1_mem = db1.is_ld | db1.is_st;
-// 分支只允许出现在执行槽 0。slot0 分支可以携带一个无访存的年轻
-// slot1；若误预测，EX 在提交边界精确杀掉 slot1。这样恢复常见的
-// branch+ALU 双发射，同时不再需要 slot1 分支解析器。
-wire branch_pair_ok = ~db1.is_branch & ~(db0.is_branch & slot1_mem);
-wire any_mul = db0.is_mul | db1.is_mul;
-wire one_mul = db0.is_mul ^ db1.is_mul;
-wire pure_alu0 = ~db0.is_mul & ~db0.is_cpucfg & ~db0.is_branch &
-                 ~db0.is_ld & ~db0.is_st;
-wire pure_alu1 = ~db1.is_mul & ~db1.is_cpucfg & ~db1.is_branch &
-                 ~db1.is_ld & ~db1.is_st;
-wire mul_pair_ok = ~any_mul |
-                   (one_mul & ((db0.is_mul & pure_alu1) |
-                               (db1.is_mul & pure_alu0)));
-wire mul_block = any_mul & ~mul_pair_ok;
+function automatic logic completion_hit(input preg_t tag);
+    completion_hit =
+        (tag == preg_t'(0)) |
+        (complete_valid & complete_bus.s0.rf_we &
+         (complete_bus.s0.pdst == tag)) |
+        (complete_valid & complete_bus.v1 & complete_bus.s1.rf_we &
+         (complete_bus.s1.pdst == tag));
+endfunction
 
-wire can_coissue = renamed.v1 & ~both_mem & branch_pair_ok & mul_pair_ok & ~intra_raw;
-wire issuing_split = is_valid & ~slot1_pending & renamed.v1 & ~can_coissue;
-wire group_last    = slot1_pending | ~issuing_split;
+function automatic logic ex_wakeup_hit(input preg_t tag);
+    ex_wakeup_hit =
+        (ex_wakeup0.valid & ex_wakeup0.rf_we & ~ex_wakeup0.is_ld &
+         (ex_wakeup0.pdst == tag) & (tag != preg_t'(0))) |
+        (ex_wakeup1.valid & ex_wakeup1.rf_we & ~ex_wakeup1.is_ld &
+         (ex_wakeup1.pdst == tag) & (tag != preg_t'(0)));
+endfunction
 
-assign IS_to_RF_valid = is_valid;
-assign IS_allow_in    = ~is_valid | (group_last & RF_allow_in);
-wire   is_fire        = IS_to_RF_valid & RF_allow_in;
+logic [ROB_BITS-1:0] iq_dist [0:IQ_DEPTH-1];
+logic [IQ_DEPTH-1:0] iq_pure_alu;
+logic [IQ_DEPTH-1:0] iq_ready;
 
-// 这些脉冲只描述一次真正完成的 IS 发射。多个 split 原因可以同时为 1，
-// 便于区分“本次为何不能配对”；perf_split_total 则始终每个拆分 bundle 只计 1。
-assign perf_coissue     = is_fire & ~slot1_pending & renamed.v1 & can_coissue;
-assign perf_split_total = is_fire & issuing_split;
-assign perf_split_raw   = is_fire & issuing_split & intra_raw;
-assign perf_split_mem   = is_fire & issuing_split & both_mem;
-assign perf_split_mul   = is_fire & issuing_split & mul_block;
-assign perf_split_branch = is_fire & issuing_split & ~branch_pair_ok;
+generate
+    for (genvar g = 0; g < IQ_DEPTH; g++) begin : gen_iq_status
+        wire need1 = iq_entry[g].id.d_bus.need_rj;
+        wire need2 = iq_entry[g].id.d_bus.need_rkd;
+        wire src1_ready = ~need1 | preg_ready[iq_entry[g].psrc1] |
+                          completion_hit(iq_entry[g].psrc1) |
+                          ex_wakeup_hit(iq_entry[g].psrc1);
+        wire src2_ready = ~need2 | preg_ready[iq_entry[g].psrc2] |
+                          completion_hit(iq_entry[g].psrc2) |
+                          ex_wakeup_hit(iq_entry[g].psrc2);
+        wire serial_op = iq_entry[g].id.d_bus.is_branch |
+                         iq_entry[g].id.d_bus.is_mul |
+                         iq_entry[g].id.d_bus.is_cpucfg |
+                         iq_entry[g].id.d_bus.is_ld |
+                         iq_entry[g].id.d_bus.is_st;
 
-always @(posedge clk) begin
-    if (reset)            is_valid <= 1'b0;
-    else if (flush)       is_valid <= 1'b0;
-    else if (IS_allow_in) is_valid <= DP_to_IS_valid;
-end
+        assign iq_dist[g]     = iq_entry[g].rob_idx - rob_head_idx;
+        assign iq_pure_alu[g] = ~serial_op;
+        assign iq_ready[g]    = src1_ready & src2_ready;
+    end
+endgenerate
 
-always @(posedge clk) begin
-    if (DP_to_IS_valid & IS_allow_in) is_bus_r <= DP_to_IS_BUS;
-end
+// 找到最老队列项、最老保守屏障，以及屏障之前最老的两条 ready ALU。
+logic [IQ_DEPTH-1:0] select_mask;
+logic [1:0]          select_count;
+logic [IQ_BITS-1:0]  select_idx0;
+logic [IQ_BITS-1:0]  select_idx1;
+logic                select_ooo;
+wire                 select_valid = (select_count != 2'd0);
 
-always @(posedge clk) begin
-    if (reset | flush)                  slot1_pending <= 1'b0;
-    else if (is_fire & issuing_split)   slot1_pending <= 1'b1;
-    else if (is_fire & slot1_pending)   slot1_pending <= 1'b0;
-end
+logic oldest_found;
+logic barrier_found;
+logic first_found;
+logic second_found;
+logic pair_found;
+logic [IQ_BITS-1:0] oldest_idx;
+logic [IQ_BITS-1:0] pair_idx;
+logic [ROB_BITS:0] oldest_dist;
+logic [ROB_BITS:0] barrier_dist;
+logic [ROB_BITS:0] first_dist;
+logic [ROB_BITS:0] second_dist;
+logic [ROB_BITS:0] pair_dist;
+logic [ROB_BITS:0] next_barrier_dist;
 
-rr_to_dp_bus_t out_renamed;
 always_comb begin
-    if (slot1_pending) begin
-        out_renamed.s0 = renamed.s1;
-        out_renamed.s1 = renamed.s1;
-        out_renamed.v1 = 1'b0;
-    end else if (issuing_split) begin
-        out_renamed.s0 = renamed.s0;
-        out_renamed.s1 = renamed.s1;
-        out_renamed.v1 = 1'b0;
+    select_mask  = '0;
+    select_count = 2'd0;
+    select_idx0  = '0;
+    select_idx1  = '0;
+    select_ooo   = 1'b0;
+
+    oldest_found = 1'b0;
+    barrier_found = 1'b0;
+    first_found  = 1'b0;
+    second_found = 1'b0;
+    pair_found   = 1'b0;
+    oldest_idx   = '0;
+    pair_idx     = '0;
+    oldest_dist  = ROB_DIST_END;
+    barrier_dist = ROB_DIST_END;
+    first_dist   = ROB_DIST_END;
+    second_dist  = ROB_DIST_END;
+    pair_dist    = ROB_DIST_END;
+    next_barrier_dist = ROB_DIST_END;
+
+    for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
+        if (iq_valid[k] &&
+            (!oldest_found || ({1'b0, iq_dist[k]} < oldest_dist))) begin
+            oldest_found = 1'b1;
+            oldest_idx   = IQ_BITS'(k);
+            oldest_dist  = {1'b0, iq_dist[k]};
+        end
+        if (iq_valid[k] && !iq_pure_alu[k] &&
+            (!barrier_found || ({1'b0, iq_dist[k]} < barrier_dist))) begin
+            barrier_found = 1'b1;
+            barrier_dist  = {1'b0, iq_dist[k]};
+        end
+    end
+
+    // 最老项若是保守操作，先按单发选择；分支/乘法可再带独立 ALU。
+    if (oldest_found && !iq_pure_alu[oldest_idx]) begin
+        if (iq_ready[oldest_idx]) begin
+            select_mask[oldest_idx] = 1'b1;
+            select_idx0             = oldest_idx;
+            select_count            = 2'd1;
+
+            // 恢复旧后端已经验证过的安全配对：最老分支或乘法可携带
+            // 一条独立年轻 ALU。访存/cpucfg 仍单发；候选不越过下一
+            // 个保守屏障。分支误预测时 EX 会杀掉 slot1。
+            if (iq_entry[oldest_idx].id.d_bus.is_branch |
+                iq_entry[oldest_idx].id.d_bus.is_mul) begin
+                for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
+                    if (iq_valid[k] && !iq_pure_alu[k] &&
+                        ({1'b0, iq_dist[k]} > oldest_dist) &&
+                        ({1'b0, iq_dist[k]} < next_barrier_dist))
+                        next_barrier_dist = {1'b0, iq_dist[k]};
+                end
+                for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
+                    if (iq_valid[k] && iq_pure_alu[k] && iq_ready[k] &&
+                        ({1'b0, iq_dist[k]} > oldest_dist) &&
+                        ({1'b0, iq_dist[k]} < next_barrier_dist) &&
+                        (!pair_found || ({1'b0, iq_dist[k]} < pair_dist))) begin
+                        pair_found = 1'b1;
+                        pair_idx   = IQ_BITS'(k);
+                        pair_dist  = {1'b0, iq_dist[k]};
+                    end
+                end
+                if (pair_found) begin
+                    select_mask[pair_idx] = 1'b1;
+                    select_idx1           = pair_idx;
+                    select_count          = 2'd2;
+                end
+            end
+        end
     end else begin
-        out_renamed = renamed;
+        for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
+            if (iq_valid[k] && iq_pure_alu[k] && iq_ready[k] &&
+                (!barrier_found || ({1'b0, iq_dist[k]} < barrier_dist))) begin
+                if (!first_found || ({1'b0, iq_dist[k]} < first_dist)) begin
+                    if (first_found) begin
+                        second_found = 1'b1;
+                        select_idx1  = select_idx0;
+                        second_dist  = first_dist;
+                    end
+                    first_found = 1'b1;
+                    select_idx0 = IQ_BITS'(k);
+                    first_dist  = {1'b0, iq_dist[k]};
+                end else if (!second_found ||
+                             ({1'b0, iq_dist[k]} < second_dist)) begin
+                    second_found = 1'b1;
+                    select_idx1  = IQ_BITS'(k);
+                    second_dist  = {1'b0, iq_dist[k]};
+                end
+            end
+        end
+
+        if (first_found) begin
+            select_mask[select_idx0] = 1'b1;
+            select_count = 2'd1;
+            if (second_found) begin
+                select_mask[select_idx1] = 1'b1;
+                select_count = 2'd2;
+            end
+        end
+    end
+
+    // 若任一被选项前面仍留有未选的有效项，本拍发生真实乱序越过。
+    for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
+        if (select_mask[k]) begin
+            for (int unsigned m = 0; m < IQ_DEPTH; m++) begin
+                if (iq_valid[m] && !select_mask[m] &&
+                    ({1'b0, iq_dist[m]} < {1'b0, iq_dist[k]}))
+                    select_ooo = 1'b1;
+            end
+        end
     end
 end
 
-assign IS_to_RF_BUS = '{dp_to_is_bus: '{rr_to_dp_bus: out_renamed}};
+rr_to_dp_bus_t selected_bus;
+is_to_rf_bus_t selected_out_bus;
+always_comb begin
+    selected_bus.s0 = iq_entry[select_idx0];
+    selected_bus.s1 = iq_entry[select_idx1];
+    selected_bus.v1 = (select_count == 2'd2);
+    selected_out_bus = '{dp_to_is_bus: '{rr_to_dp_bus: selected_bus}};
+end
+
+logic          hold_valid;
+is_to_rf_bus_t hold_bus;
+wire direct_select = ~hold_valid & select_valid;
+wire refill_hold   = hold_valid & RF_allow_in & select_valid;
+wire capture_hold  = direct_select & ~RF_allow_in;
+wire direct_fire   = direct_select & RF_allow_in;
+wire select_fire   = (refill_hold | capture_hold | direct_fire) & ~flush;
+
+always_ff @(posedge clk) begin
+    if (reset | flush) begin
+        hold_valid <= 1'b0;
+    end else if (hold_valid) begin
+        if (RF_allow_in) begin
+            hold_valid <= select_valid;
+            if (select_valid)
+                hold_bus <= selected_out_bus;
+        end
+    end else if (capture_hold) begin
+        hold_valid <= 1'b1;
+        hold_bus   <= selected_out_bus;
+    end
+end
+
+assign IS_to_RF_valid = hold_valid | select_valid;
+assign IS_to_RF_BUS   = hold_valid ? hold_bus : selected_out_bus;
+
+// IS_allow_in 仅看当前登记占用；满队列即使同拍发射也保守地下一拍再收。
+wire [1:0] dispatch_need = DP_to_IS_BUS.rr_to_dp_bus.v1 ? 2'd2 : 2'd1;
+wire [3:0] dispatch_need_w = {2'b0, dispatch_need};
+assign IS_allow_in = ~flush &&
+                     (count <= (IQ_DEPTH_W - dispatch_need_w));
+wire dispatch_fire = DP_to_IS_valid & IS_allow_in;
+
+logic [IQ_BITS-1:0] free_idx0;
+logic [IQ_BITS-1:0] free_idx1;
+logic free_found0;
+logic free_found1;
+always_comb begin
+    free_idx0 = '0;
+    free_idx1 = '0;
+    free_found0 = 1'b0;
+    free_found1 = 1'b0;
+    for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
+        if (!iq_valid[k] && !free_found0) begin
+            free_idx0 = IQ_BITS'(k);
+            free_found0 = 1'b1;
+        end else if (!iq_valid[k] && !free_found1) begin
+            free_idx1 = IQ_BITS'(k);
+            free_found1 = 1'b1;
+        end
+    end
+end
+
+wire [1:0] dispatch_count = dispatch_fire
+                          ? (DP_to_IS_BUS.rr_to_dp_bus.v1 ? 2'd2 : 2'd1)
+                          : 2'd0;
+wire [1:0] issued_count = select_fire ? select_count : 2'd0;
+wire [3:0] dispatch_count_w = {2'b0, dispatch_count};
+wire [3:0] issued_count_w   = {2'b0, issued_count};
+
+always_ff @(posedge clk) begin
+    if (reset | flush) begin
+        iq_valid <= '0;
+        count    <= 4'd0;
+    end else begin
+        count <= count + dispatch_count_w - issued_count_w;
+
+        if (select_fire) begin
+            for (int unsigned k = 0; k < IQ_DEPTH; k++) begin
+                if (select_mask[k])
+                    iq_valid[k] <= 1'b0;
+            end
+        end
+
+        if (dispatch_fire) begin
+            iq_valid[free_idx0] <= 1'b1;
+            iq_entry[free_idx0] <= DP_to_IS_BUS.rr_to_dp_bus.s0;
+            if (DP_to_IS_BUS.rr_to_dp_bus.v1) begin
+                iq_valid[free_idx1] <= 1'b1;
+                iq_entry[free_idx1] <= DP_to_IS_BUS.rr_to_dp_bus.s1;
+            end
+        end
+    end
+end
+
+always_ff @(posedge clk) begin
+    if (reset) begin
+        preg_ready <= {{(PREG_COUNT-ARCH_REG_COUNT){1'b0}},
+                       {ARCH_REG_COUNT{1'b1}}};
+    end else begin
+        if (complete_valid) begin
+            if (complete_bus.s0.rf_we &&
+                (complete_bus.s0.pdst != preg_t'(0)))
+                preg_ready[complete_bus.s0.pdst] <= 1'b1;
+            if (complete_bus.v1 && complete_bus.s1.rf_we &&
+                (complete_bus.s1.pdst != preg_t'(0)))
+                preg_ready[complete_bus.s1.pdst] <= 1'b1;
+        end
+
+        // 分配优先于同拍完成；free-list 不旁路同拍释放，正常情况下不会
+        // 命中同一 tag，但明确优先级可保护后续接口演进。
+        if (rename_alloc_fire) begin
+            if (rename_alloc_bus.s0.id.d_bus.rf_we &&
+                (rename_alloc_bus.s0.pdst != preg_t'(0)))
+                preg_ready[rename_alloc_bus.s0.pdst] <= 1'b0;
+            if (rename_alloc_v1 && rename_alloc_bus.s1.id.d_bus.rf_we &&
+                (rename_alloc_bus.s1.pdst != preg_t'(0)))
+                preg_ready[rename_alloc_bus.s1.pdst] <= 1'b0;
+        end
+    end
+end
+
+// 保留旧性能端口，coissue 改为 IQ 双选脉冲；固定 bundle 的 split 已不再
+// 是有意义的统计。新增两个脉冲分别记录真实乱序越过和容量背压。
+assign perf_coissue      = select_fire & (select_count == 2'd2);
+assign perf_split_total  = 1'b0;
+assign perf_split_raw    = 1'b0;
+assign perf_split_mem    = 1'b0;
+assign perf_split_mul    = 1'b0;
+assign perf_split_branch = 1'b0;
+assign perf_ooo_issue    = select_fire & select_ooo;
+assign perf_iq_full      = DP_to_IS_valid & ~IS_allow_in;
+
+// 兼容随机测试失败诊断中的层级观察名。
+wire is_valid = (count != 4'd0) | hold_valid;
 
 endmodule

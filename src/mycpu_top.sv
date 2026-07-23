@@ -4,7 +4,8 @@
 // 九级流水：IF → ID → RR → DP → IS → RF → EX → WB → CM
 //          取指 译码 重命名 分发 发射 读寄存器 执行 写回 提交
 //
-// 当前为两槽顺序双发射；RR/DP 仍为后续乱序化保留的缓冲级。
+// 当前已接入 8 项整数 IQ：纯 ALU 可按物理 tag ready 状态乱序双发；
+// 分支、乘法、访存和 cpucfg 仍作为保守屏障单发。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -105,6 +106,7 @@ wire [31:0] cm_rf_wdata1, cm_rf_wdata2;
 
 wire           rob_alloc_ready;
 rob_idx_t      rob_alloc_idx0, rob_alloc_idx1;
+rob_idx_t      rob_head_idx;
 wire           rob_alloc_fire;
 wire           rob_alloc_v1;
 rr_to_dp_bus_t rob_alloc_bus;
@@ -135,6 +137,8 @@ wire perf_split_raw_event;
 wire perf_split_mem_event;
 wire perf_split_mul_event;
 wire perf_split_branch_event;
+wire perf_ooo_issue_event;
+wire perf_iq_full_event;
 wire perf_icache_miss_event;
 wire perf_dcache_hit_event;
 wire perf_dcache_miss_event;
@@ -225,13 +229,23 @@ IS u_IS (
     .IS_to_RF_valid    (IS_to_RF_valid         ),
     .DP_to_IS_BUS      (DP_to_IS_BUS           ),
     .IS_to_RF_BUS      (IS_to_RF_BUS           ),
+    .rob_head_idx      (rob_head_idx            ),
+    .rename_alloc_fire (rob_alloc_fire          ),
+    .rename_alloc_v1   (rob_alloc_v1            ),
+    .rename_alloc_bus  (rob_alloc_bus           ),
+    .complete_valid    (WB_to_ROB_valid         ),
+    .complete_bus      (WB_to_ROB_BUS           ),
+    .ex_wakeup0        (ex_fwd0                 ),
+    .ex_wakeup1        (ex_fwd1                 ),
 
     .perf_coissue      (perf_coissue_event     ),
     .perf_split_total  (perf_split_total_event ),
     .perf_split_raw    (perf_split_raw_event   ),
     .perf_split_mem    (perf_split_mem_event   ),
     .perf_split_mul    (perf_split_mul_event   ),
-    .perf_split_branch (perf_split_branch_event)
+    .perf_split_branch (perf_split_branch_event),
+    .perf_ooo_issue    (perf_ooo_issue_event   ),
+    .perf_iq_full      (perf_iq_full_event     )
 );
 
 RF u_RF (
@@ -318,6 +332,7 @@ rob u_rob (
     .alloc_ready      (rob_alloc_ready),
     .alloc_idx0       (rob_alloc_idx0),
     .alloc_idx1       (rob_alloc_idx1),
+    .head_idx         (rob_head_idx),
     .complete_valid   (WB_to_ROB_valid),
     .complete_bus     (WB_to_ROB_BUS),
     .recover_valid    (redirect),
@@ -461,6 +476,8 @@ reg [63:0] perf_split_raw;
 reg [63:0] perf_split_mem;
 reg [63:0] perf_split_mul;
 reg [63:0] perf_split_branch;
+reg [63:0] perf_ooo_issue;
+reg [63:0] perf_iq_full;
 reg [63:0] perf_icache_miss;
 reg [63:0] perf_dcache_hit;
 reg [63:0] perf_dcache_miss;
@@ -481,6 +498,8 @@ always @(posedge clk) begin
         perf_split_mem      <= 64'b0;
         perf_split_mul      <= 64'b0;
         perf_split_branch   <= 64'b0;
+        perf_ooo_issue      <= 64'b0;
+        perf_iq_full        <= 64'b0;
         perf_icache_miss    <= 64'b0;
         perf_dcache_hit     <= 64'b0;
         perf_dcache_miss    <= 64'b0;
@@ -502,6 +521,8 @@ always @(posedge clk) begin
         if (perf_split_mem_event)      perf_split_mem      <= perf_split_mem + 64'd1;
         if (perf_split_mul_event)      perf_split_mul      <= perf_split_mul + 64'd1;
         if (perf_split_branch_event)   perf_split_branch   <= perf_split_branch + 64'd1;
+        if (perf_ooo_issue_event)      perf_ooo_issue      <= perf_ooo_issue + 64'd1;
+        if (perf_iq_full_event)        perf_iq_full        <= perf_iq_full + 64'd1;
         if (perf_icache_miss_event)    perf_icache_miss    <= perf_icache_miss + 64'd1;
         if (perf_dcache_hit_event)     perf_dcache_hit     <= perf_dcache_hit + 64'd1;
         if (perf_dcache_miss_event)    perf_dcache_miss    <= perf_dcache_miss + 64'd1;

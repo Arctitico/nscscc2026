@@ -219,6 +219,13 @@ module tb;
         checkmem(32'h1c400014, 32'h21);
         checkmem(32'h1c400018, 32'd15);
         checkmem(32'h1c40001c, 32'd30);
+        if (u_cpu.perf_ooo_issue == 0) begin
+            $display("  FAIL integer IQ never issued around an older blocked ALU");
+            errors = errors + 1;
+        end else begin
+            $display("  ok   integer IQ out-of-order issue events = %0d",
+                     u_cpu.perf_ooo_issue);
+        end
 
         if (errors == 0) $display("==== TEST PASSED ====");
         else             $display("==== TEST FAILED: %0d errors ====", errors);

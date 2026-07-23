@@ -1,7 +1,7 @@
 // ============================================================================
 // 16 项双分配/双完成/双提交 ROB
 //
-// 当前执行仍按序，但完成结果已经按 rob_idx 写回，提交只观察 ROB head。
+// 完成结果按 rob_idx 写回，提交只观察 ROB head；整数 ALU 已可由 IQ 乱序发射。
 // 分支表项保存“执行完该分支后的 RAT snapshot”；误预测时保留到该分支，
 // 释放所有年轻目的 tag，并把 tail 回退到 branch+1。
 // ============================================================================
@@ -19,6 +19,7 @@ module rob (
     output wire             alloc_ready,
     output rob_idx_t        alloc_idx0,
     output rob_idx_t        alloc_idx1,
+    output rob_idx_t        head_idx,
 
     input  wire             complete_valid,
     input  wb_to_cm_bus_t   complete_bus,
@@ -59,6 +60,7 @@ localparam logic [ROB_BITS:0] ROB_COUNT_W = {1'b1, {ROB_BITS{1'b0}}};
 assign alloc_ready = (count <= ROB_COUNT_W - alloc_need);
 assign alloc_idx0 = tail;
 assign alloc_idx1 = tail + rob_idx_t'(1);
+assign head_idx   = head;
 
 wire rob_idx_t head1 = head + rob_idx_t'(1);
 wire head0_ready = (count != 0) && entries[head].valid && entries[head].ready;
