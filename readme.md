@@ -1,50 +1,41 @@
 # 2026 LoongArch 个人赛 CPU
 
-当前 `main` 工作区是九级顺序双发射实现，改动尚未 Git commit；旧的实验版本仍保存在 `dual-issue-wip` 分支，但后续开发以已经对齐 2026 标准的 `main` 为准。当前实现已接入官方 `nscscc-solo-la-soc` AXI 模板，通过完整 Verilator supervisor 套件、XSIM SIMPLE、100 MHz Vivado 时序签核和网站四项性能测试。
+当前分支 `inorder-dual-issue` 是九级顺序双发主开发线。CPU、板级 SoC、引脚约束和 Vivado 构建流程都由本仓管理；最终实现使用 CPU 私有类 SRAM 口直连 BaseRAM、ExtRAM 和 UART，不再经过 AXI 或官方参考 SoC。
 
 ## 目录
 
-- `src/`：CPU 唯一主源码，包含九级顺序双发射核心、I-cache、`core_top` 和 AXI bridge。
-- `soc/`：旧 ThinPAD 物理 SRAM/UART 外壳，保留用于兼容回归，不再是最终推荐集成目标。
+- `src/`：CPU 主源码，包含九级顺序双发、I-cache、D-cache 和 write buffer。
+- `soc/`：2026 板级顶层、PLL、Base/Ext SRAM 控制器和仓内 UART。
+- `fpga/`：Vivado 工程创建/构建 Tcl 与 2026 板卡引脚、时序约束。
 - `sim/`：CPU 核定向测试与随机 DiffTest。
-- `sim_soc/`：旧 SoC 定向/随机、一级功能和旧 supervisor 启动测试。
-- `scripts/sync_official_soc.sh`：把 `src/` 同步到官方模板的 `rtl/ip/myCPU/`。
+- `sim_soc/`：直连 SoC 定向/随机、一级功能和 supervisor 启动测试。
+- `build_fpga.sh`：从本仓源码独立生成并签核 bitstream。
 
 ## 当前能力
 
 - 复位 PC：`0x1c000000`。
-- 普通指令：官方 supervisor、STREAM、MATRIX、CryptoNight、MIXED 所需完整子集。
-- 对齐 8B 双取指、保守双发射、4 读 2 写寄存器堆和最多双提交；每拍最多一个访存，乘法独占发射。
-- `cpucfg`：采用架构无 Cache 路线，`CPUCFG[0x10]` 报告 I/D Cache 均不存在。
-- 内部透明 2 路 I-cache，16B cache line；数据口写入相同指令行时自动失效，支持 monitor 下载代码后执行。
-- 官方 `core_top` 32 位 AXI master：I-cache 四拍 burst、load 单拍读、store 独立 AW/W 握手并等待 B 响应。
-- 内部 `debug0/debug1_wb_*` 双提交信息，包括原始指令；官方 `core_top` 合同只导出 `debug0`。
+- 普通指令：supervisor、STREAM、MATRIX、CryptoNight、MIXED 所需完整子集。
+- 对齐 8B 双取指、顺序双发射、4 读 2 写寄存器堆和最多双提交；每拍最多一个访存、一个乘法和一个分支，并支持安全的 MU+ME/MU+B/ME+B 共发。
+- `cpucfg`：采用架构无 Cache 路线，`CPUCFG[0x10]` 报告 I/D Cache 均不存在；内部 Cache 对软件透明。
+- 2 路、16B line 的 I-cache 和 4 KiB D-cache；D-cache 为 write-through/no-write-allocate，带两项 write buffer。
+- 取指为四字突发类 SRAM 通道；数据为分离读写请求/完成通道。`mem_bridge` 直接仲裁两片物理 SRAM。
+- SRAM 写周期结束后，地址、字节使能、写数据和数据总线驱动继续保持一整拍。
+- 内部 `debug0/debug1_wb_*` 提供双提交信息，包括原始指令。
 
-尚未实现架构可见 Cache 路线的 D-cache、CSR/DMW/cacop。100 MHz bitstream 已生成并跑网站四项性能测试；当前已知 CryptoNight 为 1510 ms，其余三项相对单发射变化小于 1 ms。
+尚未实现架构可见 Cache、CSR/DMW/cacop。官方参考 SoC 的 AXI 包装文件仍留作历史兼容，但 `fpga/create_project.tcl` 不会把它们加入最终工程。
 
-## 官方模板集成
+## 独立 Vivado 构建
 
-`individual/src/` 是唯一需要手工修改的 CPU 源码。修改后执行：
+从仓库根目录直接运行：
 
 ```bash
-cd nscscc2026/individual
-./scripts/sync_official_soc.sh
-
-cd ../nscscc-solo-la-soc
-git submodule update --init --recursive
-python3 sim/run.py sdk/software/examples/supervisor/sim/suite.json --prepare
+./build_fpga.sh --freq 50 --recreate-project
+./build_fpga.sh --freq 100
 ```
 
-同步时 `cpu_pkg.sv` 会复制为 `00_cpu_pkg.sv`，确保官方按文件名排序收集源码时，类型定义先于使用它的模块。官方模板是独立嵌套 Git 仓库；不要在模板副本里单独修改 CPU，否则下一次同步会覆盖改动。
+脚本以 50 MHz 板载时钟为输入，自动选择合法的 Artix-7 PLL 整数参数，将实际频率同时传给 UART 分频，并归档 bit、SHA-256、clock/check_timing、setup/hold 和资源报告。工程位于 `fpga/project/`，结果位于 `output/`；两者均不提交 Git。
 
-当前官方套件已验证：
-
-- SIMPLE 启动和执行；
-- STREAM 3 MiB 结果比对；
-- MATRIX 64 KiB 结果比对；
-- MIXED 20B signature；
-- CryptoNight 2 MiB 结果比对；
-- Fibonacci `A/D/G/R/D` UART 闭环。
+当前直连 50 MHz 候选位于 `output/fpga_50mhz_20260724_121743/`：WNS `+3.238 ns`、TNS `0`、WHS `+0.024 ns`，0 个 setup 失败端点、no-clock pin 和 unconstrained internal endpoint；资源为 8176 LUT、4209 Register、6 RAMB18、3 DSP。
 
 ## 本仓回归
 

@@ -98,9 +98,11 @@ wire        data_wr_ok;
 // ---------------- SRAM 写数据（三态在本层）----------------
 wire [31:0] base_ram_wdat;
 wire [31:0] ext_ram_wdat;
+wire        base_ram_wdrive;
+wire        ext_ram_wdrive;
 
-assign base_ram_data = base_ram_we_n ? 32'bz : base_ram_wdat;  // we_n 低=写，驱动总线
-assign ext_ram_data  = ext_ram_we_n  ? 32'bz : ext_ram_wdat;
+assign base_ram_data = base_ram_wdrive ? base_ram_wdat : 32'bz;
+assign ext_ram_data  = ext_ram_wdrive  ? ext_ram_wdat  : 32'bz;
 
 // ---------------- CPU ----------------
 mycpu_top u_cpu (
@@ -161,6 +163,7 @@ mem_bridge #(.SRAM_LATENCY(2)) u_bridge (
     .base_ram_ce_n  (base_ram_ce_n  ),
     .base_ram_oe_n  (base_ram_oe_n  ),
     .base_ram_we_n  (base_ram_we_n  ),
+    .base_ram_wdrive(base_ram_wdrive),
     .base_ram_wdat  (base_ram_wdat  ),
     .base_ram_rdat  (base_ram_data  ),
     .ext_ram_addr   (ext_ram_addr   ),
@@ -168,6 +171,7 @@ mem_bridge #(.SRAM_LATENCY(2)) u_bridge (
     .ext_ram_ce_n   (ext_ram_ce_n   ),
     .ext_ram_oe_n   (ext_ram_oe_n   ),
     .ext_ram_we_n   (ext_ram_we_n   ),
+    .ext_ram_wdrive (ext_ram_wdrive ),
     .ext_ram_wdat   (ext_ram_wdat   ),
     .ext_ram_rdat   (ext_ram_data   ),
     .txd            (txd            ),

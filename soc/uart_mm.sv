@@ -10,7 +10,9 @@
 // CPU 的 ld.b 在 WB 按地址低两位选择 byte lane，因此读字节必须放到地址对应
 // 的 32 位 lane 中；例如 +5 的状态字节放在 rdata[15:8]。
 // ============================================================================
-module uart_mm (
+module uart_mm #(
+    parameter integer CLK_FREQ = 50_000_000
+) (
     input  wire        clk,
     input  wire        reset,
 
@@ -34,20 +36,22 @@ wire       rx_ready;
 wire [7:0] rx_data;
 reg        rx_clear;
 
-async_transmitter #(.ClkFrequency(50_000_000), .Baud(115200)) u_tx (
-    .clk      (clk),
-    .TxD_start(tx_start),
-    .TxD_data (tx_data),
-    .TxD      (txd),
-    .TxD_busy (tx_busy)
+uart_tx #(.CLK_FREQ(CLK_FREQ), .BAUD(115200)) u_tx (
+    .clk   (clk),
+    .reset (reset),
+    .start (tx_start),
+    .data  (tx_data),
+    .txd   (txd),
+    .busy  (tx_busy)
 );
 
-async_receiver #(.ClkFrequency(50_000_000), .Baud(115200)) u_rx (
-    .clk           (clk),
-    .RxD           (rxd),
-    .RxD_data_ready(rx_ready),
-    .RxD_clear     (rx_clear),
-    .RxD_data      (rx_data)
+uart_rx #(.CLK_FREQ(CLK_FREQ), .BAUD(115200)) u_rx (
+    .clk   (clk),
+    .reset (reset),
+    .rxd   (rxd),
+    .clear (rx_clear),
+    .ready (rx_ready),
+    .data  (rx_data)
 );
 
 wire [7:0] status_byte = {2'b0, ~tx_busy, 4'b0, rx_ready};

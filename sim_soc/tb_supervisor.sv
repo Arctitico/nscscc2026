@@ -111,12 +111,12 @@ module tb_supervisor;
         end
     end
 
-    // 用同一官方 async_receiver 解码 DUT 的 115200 串行输出。
+    // 用仓内 UART 接收器解码 DUT 的 115200 串行输出。
     wire       mon_ready;
     wire [7:0] mon_data;
-    async_receiver #(.ClkFrequency(50_000_000), .Baud(115200)) u_monitor_rx (
-        .clk(clk), .RxD(txd), .RxD_data_ready(mon_ready),
-        .RxD_clear(mon_ready), .RxD_data(mon_data)
+    uart_rx #(.CLK_FREQ(50_000_000), .BAUD(115200)) u_monitor_rx (
+        .clk(clk), .reset(reset), .rxd(txd), .clear(mon_ready),
+        .ready(mon_ready), .data(mon_data)
     );
 
     function automatic [7:0] expected_char(input integer index);

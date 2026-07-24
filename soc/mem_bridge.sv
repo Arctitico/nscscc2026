@@ -19,7 +19,8 @@
 // ============================================================================
 module mem_bridge #(
     parameter integer SRAM_LATENCY = 2,
-    parameter integer LINE_WORDS   = 4     // 取指突发字数（与 icache 行宽一致）
+    parameter integer LINE_WORDS   = 4,    // 取指突发字数（与 icache 行宽一致）
+    parameter integer CLK_FREQ     = 50_000_000
 ) (
     input  wire        clk,
     input  wire        reset,
@@ -51,6 +52,7 @@ module mem_bridge #(
     output wire        base_ram_ce_n,
     output wire        base_ram_oe_n,
     output wire        base_ram_we_n,
+    output wire        base_ram_wdrive,
     output wire [31:0] base_ram_wdat,
     input  wire [31:0] base_ram_rdat,
 
@@ -60,6 +62,7 @@ module mem_bridge #(
     output wire        ext_ram_ce_n,
     output wire        ext_ram_oe_n,
     output wire        ext_ram_we_n,
+    output wire        ext_ram_wdrive,
     output wire [31:0] ext_ram_wdat,
     input  wire [31:0] ext_ram_rdat,
 
@@ -101,6 +104,7 @@ sram_ctrl #(.LATENCY(SRAM_LATENCY)) u_base (
     .clk     (clk          ), .reset(reset),
     .ram_addr(base_ram_addr), .ram_be_n(base_ram_be_n),
     .ram_ce_n(base_ram_ce_n), .ram_oe_n(base_ram_oe_n), .ram_we_n(base_ram_we_n),
+    .ram_wdrive(base_ram_wdrive),
     .ram_wdat(base_ram_wdat), .ram_rdat(base_ram_rdat),
     .req     (base_req     ), .wstrb(base_wstrb), .addr(base_acc_addr),
     .wdata   (data_wr_data), .len(base_len), .tag_in(base_tagin),
@@ -139,6 +143,7 @@ sram_ctrl #(.LATENCY(SRAM_LATENCY)) u_ext (
     .clk     (clk         ), .reset(reset),
     .ram_addr(ext_ram_addr), .ram_be_n(ext_ram_be_n),
     .ram_ce_n(ext_ram_ce_n), .ram_oe_n(ext_ram_oe_n), .ram_we_n(ext_ram_we_n),
+    .ram_wdrive(ext_ram_wdrive),
     .ram_wdat(ext_ram_wdat), .ram_rdat(ext_ram_rdat),
     .req     (ext_req     ), .wstrb(ext_wstrb), .addr(ext_acc_addr),
     .wdata   (data_wr_data), .len(ext_len), .tag_in(ext_tagin),
@@ -162,7 +167,7 @@ wire        uart_pick_write = wr_uart;
 wire        uart_req = wr_uart | rd_uart;
 wire        uart_tagout;
 
-uart_mm u_uart (
+uart_mm #(.CLK_FREQ(CLK_FREQ)) u_uart (
     .clk    (clk           ), .reset(reset),
     .txd    (txd           ), .rxd(rxd),
     .req    (uart_req), .wstrb(uart_pick_write ? data_wr_strb : 4'b0),

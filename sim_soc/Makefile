@@ -7,8 +7,6 @@
 #   make clean
 SRC_DIR = ../src
 SOC_DIR = ../soc
-ASYNC   = ../../../nscscc2025/2025_nscscc_个人赛模版工程_la32r/thinpad_top.srcs/sources_1/new/async.v
-
 CPU_SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR)/mul.sv \
            $(SRC_DIR)/decoder.sv $(SRC_DIR)/regfile.sv $(SRC_DIR)/bpu.sv \
            $(SRC_DIR)/icache.sv $(SRC_DIR)/write_buffer.sv $(SRC_DIR)/dcache.sv \
@@ -16,8 +14,8 @@ CPU_SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR
            $(SRC_DIR)/IS.sv $(SRC_DIR)/RF.sv $(SRC_DIR)/EX1.sv $(SRC_DIR)/EX2.sv $(SRC_DIR)/WB.sv \
            $(SRC_DIR)/CM.sv $(SRC_DIR)/mycpu_top.sv
 
-SOC_SRCS = $(SOC_DIR)/sram_ctrl.sv $(SOC_DIR)/uart_mm.sv $(SOC_DIR)/mem_bridge.sv \
-           $(SOC_DIR)/thinpad_top.sv $(ASYNC)
+SOC_SRCS = $(SOC_DIR)/sram_ctrl.sv $(SOC_DIR)/uart_phy.sv $(SOC_DIR)/uart_mm.sv \
+           $(SOC_DIR)/mem_bridge.sv $(SOC_DIR)/thinpad_top.sv
 
 SRCS = $(CPU_SRCS) $(SOC_SRCS)
 
@@ -84,7 +82,6 @@ fuzz:
 	done; \
 	echo "==== ALL $(COUNT) SEEDS PASSED ===="
 
-# -Wno-WIDTH* 仅为屏蔽第三方 async.v(官方 UART PHY) 的良性位宽告警；本仓 soc/*.sv 全干净
 lint:
 	verilator --lint-only --top-module thinpad_top -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND $(SRCS)
 
