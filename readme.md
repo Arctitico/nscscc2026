@@ -51,7 +51,7 @@
 
 首个直连候选 `output/fpga_50mhz_20260724_121743/` 网站实测无法启动 monitor。修复后的 50 MHz 候选位于 `output/fpga_50mhz_20260724_123734/`：WNS `+1.808 ns`、TNS `0`、WHS `+0.037 ns`，0 个 setup 失败端点、no-clock pin 和 unconstrained internal endpoint；资源为 8175 LUT、4209 Register、6 RAMB18、3 DSP。该候选已完成网站六项签核：Level1/Level3 通过，MATRIX/STREAM/CryptoNight/MIXED 为 `200/130/922/9 ms`，全部 100 分。
 
-当前高频上板候选为 `output/fpga_90mhz_20_20_1_board_20260724/`：目标/PLL 实际频率 `90 MHz`，SRAM 为 `2/2/1` 拍，WNS `+0.194 ns`、TNS `0`、WHS `+0.055 ns`，0 个 setup 失败端点、no-clock pin 和 unconstrained internal endpoint。92.5 MHz 虽以 WNS/WHS `+0.010/+0.010 ns` 勉强通过，95 MHz 已失败，因此当前 STA 边界在 `92.5–95 MHz`，推荐先用 90 MHz 候选完成板上 A/B。
+当前网站签核基线为 `output/fpga_90mhz_20_20_1_board_20260724/`：目标/PLL 实际频率 `90 MHz`，SRAM 为 `2/2/1` 拍，WNS `+0.194 ns`、TNS `0`、WHS `+0.055 ns`，0 个 setup 失败端点、no-clock pin 和 unconstrained internal endpoint。网站 Level1/Level3 通过，MATRIX/STREAM/CryptoNight/MIXED 分别为 `96/63/407/4 ms`，六项全部 100 分，详见 `submit/inorder_dual_issue/10.md`。92.5 MHz 虽以 WNS/WHS `+0.010/+0.010 ns` 勉强通过，95 MHz 已失败，因此当前 STA 边界在 `92.5–95 MHz`。
 
 ## 本仓回归
 
