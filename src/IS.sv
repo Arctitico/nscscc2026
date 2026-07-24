@@ -1,6 +1,13 @@
 // ============================================================================
 // IS
 //
+// 定义以下五类指令：
+// N：普通指令，包括使用到ALU的运算指令之类的。
+// MU：乘法指令。
+// B：分支指令。
+// ME：访存指令。
+// S：特殊指令，永远单发射。好像只有cpucfg，因为我们声称cache不存在。
+//
 // | slot0/slot1 | N | MU | B | ME | S |
 // |-------------|---|----|---|----|---|
 // | N           | y | y  | 1 | y  | n |
@@ -28,6 +35,7 @@ module IS (
     input  wire             DP_to_IS_valid,
     input  wire             RF_allow_in,
     output wire             IS_allow_in,
+    output wire             IS_take_two,
     output wire             IS_to_RF_valid,
 
     input  dp_to_is_bus_t   DP_to_IS_BUS,
@@ -43,10 +51,14 @@ module IS (
 
 reg            is_valid;
 dp_to_is_bus_t is_bus_r;
-reg            slot1_pending;
+reg            split_r;
+reg            split_raw_r;
+reg            split_mem_r;
+reg            split_mul_r;
+reg            split_branch_r;
 
 id_to_dp_bus_t idp;
-assign idp = is_bus_r.id_to_dp_bus;
+assign idp = DP_to_IS_BUS.id_to_dp_bus;
 
 d_bus_t db0;
 d_bus_t db1;
@@ -80,21 +92,21 @@ wire type_pair_ok = ~any_special &
                     ~branch_mem_bad;
 
 wire can_coissue = idp.v1 & type_pair_ok & ~intra_raw;
-wire issuing_split = is_valid & ~slot1_pending & idp.v1 & ~can_coissue;
-wire group_last    = slot1_pending | ~issuing_split;
+wire loading_split = idp.v1 & ~can_coissue;
 
 assign IS_to_RF_valid = is_valid;
-assign IS_allow_in    = ~is_valid | (group_last & RF_allow_in);
+assign IS_allow_in    = ~is_valid | RF_allow_in;
+assign IS_take_two    = DP_to_IS_valid & IS_allow_in & can_coissue;
 wire   is_fire        = IS_to_RF_valid & RF_allow_in;
 
 // 这些脉冲只描述一次真正完成的 IS 发射。多个 split 原因可以同时为 1，
 // 便于区分“本次为何不能配对”；perf_split_total 则始终每个拆分 bundle 只计 1。
-assign perf_coissue     = is_fire & ~slot1_pending & idp.v1 & can_coissue;
-assign perf_split_total = is_fire & issuing_split;
-assign perf_split_raw   = is_fire & issuing_split & intra_raw;
-assign perf_split_mem   = is_fire & issuing_split & (both_mem | branch_mem_bad);
-assign perf_split_mul   = is_fire & issuing_split & both_mul;
-assign perf_split_branch = is_fire & issuing_split & (both_branch | branch_mem_bad);
+assign perf_coissue      = is_fire & is_bus_r.id_to_dp_bus.v1;
+assign perf_split_total  = is_fire & split_r;
+assign perf_split_raw    = is_fire & split_raw_r;
+assign perf_split_mem    = is_fire & split_mem_r;
+assign perf_split_mul    = is_fire & split_mul_r;
+assign perf_split_branch = is_fire & split_branch_r;
 
 always @(posedge clk) begin
     if (reset)            is_valid <= 1'b0;
@@ -102,31 +114,33 @@ always @(posedge clk) begin
     else if (IS_allow_in) is_valid <= DP_to_IS_valid;
 end
 
-always @(posedge clk) begin
-    if (DP_to_IS_valid & IS_allow_in) is_bus_r <= DP_to_IS_BUS;
-end
-
-always @(posedge clk) begin
-    if (reset | flush)                  slot1_pending <= 1'b0;
-    else if (is_fire & issuing_split)   slot1_pending <= 1'b1;
-    else if (is_fire & slot1_pending)   slot1_pending <= 1'b0;
-end
-
-id_to_dp_bus_t out_idp;
+dp_to_is_bus_t load_bus;
 always_comb begin
-    if (slot1_pending) begin
-        out_idp.s0 = idp.s1;
-        out_idp.s1 = idp.s1;
-        out_idp.v1 = 1'b0;
-    end else if (issuing_split) begin
-        out_idp.s0 = idp.s0;
-        out_idp.s1 = idp.s1;
-        out_idp.v1 = 1'b0;
-    end else begin
-        out_idp = idp;
+    load_bus = DP_to_IS_BUS;
+    load_bus.id_to_dp_bus.v1 = can_coissue;
+end
+
+always @(posedge clk) begin
+    if (DP_to_IS_valid & IS_allow_in)
+        is_bus_r <= load_bus;
+end
+
+always @(posedge clk) begin
+    if (reset | flush) begin
+        split_r        <= 1'b0;
+        split_raw_r    <= 1'b0;
+        split_mem_r    <= 1'b0;
+        split_mul_r    <= 1'b0;
+        split_branch_r <= 1'b0;
+    end else if (DP_to_IS_valid & IS_allow_in) begin
+        split_r        <= loading_split;
+        split_raw_r    <= loading_split & intra_raw;
+        split_mem_r    <= loading_split & (both_mem | branch_mem_bad);
+        split_mul_r    <= loading_split & both_mul;
+        split_branch_r <= loading_split & (both_branch | branch_mem_bad);
     end
 end
 
-assign IS_to_RF_BUS = '{dp_to_is_bus: '{id_to_dp_bus: out_idp}};
+assign IS_to_RF_BUS = '{dp_to_is_bus: is_bus_r};
 
 endmodule

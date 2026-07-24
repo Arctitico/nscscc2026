@@ -50,6 +50,7 @@ wire IF_to_ID_valid;
 wire ID_to_DP_valid;
 wire DP_to_IS_valid;
 wire IS_to_RF_valid;
+wire IS_take_two;
 wire RF_to_EX1_valid;
 wire EX1_to_EX2_valid;
 wire EX2_to_WB_valid;
@@ -171,6 +172,7 @@ DP u_DP (
     .flush         (flush         ),
     .ID_to_DP_valid(ID_to_DP_valid),
     .IS_allow_in   (IS_allow_in   ),
+    .IS_take_two   (IS_take_two   ),
     .DP_allow_in   (DP_allow_in   ),
     .DP_to_IS_valid(DP_to_IS_valid),
     .ID_to_DP_BUS  (ID_to_DP_BUS  ),
@@ -184,6 +186,7 @@ IS u_IS (
     .DP_to_IS_valid    (DP_to_IS_valid         ),
     .RF_allow_in       (RF_allow_in            ),
     .IS_allow_in       (IS_allow_in            ),
+    .IS_take_two       (IS_take_two            ),
     .IS_to_RF_valid    (IS_to_RF_valid         ),
     .DP_to_IS_BUS      (DP_to_IS_BUS           ),
     .IS_to_RF_BUS      (IS_to_RF_BUS           ),
