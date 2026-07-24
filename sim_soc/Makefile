@@ -62,7 +62,8 @@ PFLAGS = --binary --timing --top-module tb_perf -o Vtb_perf \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
-PREFETCH_PROFILE = dcache_prefetch_profile.sv dcache_pc_trace.sv
+PERF_PROFILES = dcache_prefetch_profile.sv dcache_pc_trace.sv \
+                issue_compaction_profile.sv
 DTRACE ?=
 
 SUPERVISOR_BUILD ?= ../../nscscc-solo-la-soc/sdk/software/examples/supervisor/build
@@ -95,7 +96,7 @@ perf-images:
 	python3 bin2hex.py $(SUPERVISOR_BUILD)/utility/crypto/crypto.bin $(PERF_CRYPTO_OUT)
 
 perf-build:
-	verilator $(PFLAGS) $(SRCS) tb_perf.sv $(PREFETCH_PROFILE)
+	verilator $(PFLAGS) $(SRCS) tb_perf.sv $(PERF_PROFILES)
 
 perf-simple: perf-images perf-build
 	./obj_dir/Vtb_perf \
