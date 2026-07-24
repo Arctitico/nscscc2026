@@ -29,7 +29,7 @@ module sram_ctrl #(
     output reg         ram_ce_n,
     output reg         ram_oe_n,
     output reg         ram_we_n,
-    output wire        ram_wdrive,
+    output reg         ram_wdrive,
     output reg  [31:0] ram_wdat,
     input  wire [31:0] ram_rdat,
 
@@ -56,6 +56,7 @@ reg [15:0] cnt;
 reg  [2:0] widx;       // 当前 beat 序号
 reg  [2:0] len_r;      // 本次突发字数-1
 reg [15:0] write_hold_count; // WE# 上升后的数据保持剩余拍数
+reg        write_r;    // 当前访问类型，供物理引脚寄存器在结束拍判断
 
 // 保持窗口的最后一拍可以提前向上游给 ready；真正接收发生在该拍末沿，
 // 此时地址/数据已经完整保持 WRITE_HOLD_CYCLES 拍，不引入额外空泡。
@@ -63,36 +64,29 @@ assign busy      = (state != S_IDLE) || (write_hold_count > 16'd1);
 assign ok        = (state == S_ACC) && (cnt == 16'd0);  // 每字访问末拍
 assign beat_last = ok && (widx == len_r);
 assign rdata     = ram_rdat;                            // 读：末拍数据已稳定，组合直通
-assign ram_wdrive = ~ram_we_n | (write_hold_count != 16'd0);
 
-// reset 异步置位，使 PLL 尚未输出 cpu_clk 时物理 SRAM 控制信号也能立即
-// 回到安全状态；释放仍由顶层 cpu_reset 的同步释放链保证。
-always @(posedge clk or posedge reset) begin
+// 协议状态只使用同步复位。不要让这些寄存器带异步复位：它们会经过
+// mem_bridge 影响 CPU cache RAM 的地址/控制输入，异步控制会触发
+// RAMB18 REQP-1840，并显著恶化布局布线与时序。
+always @(posedge clk) begin
     if (reset) begin
         state    <= S_IDLE;
-        ram_ce_n <= 1'b1; ram_oe_n <= 1'b1; ram_we_n <= 1'b1;
-        ram_be_n <= 4'hf; ram_addr <= 20'b0; ram_wdat <= 32'b0;
         tag_out  <= 1'b0; cnt <= 16'b0; widx <= 3'b0; len_r <= 3'b0;
         write_hold_count <= 16'b0;
+        write_r <= 1'b0;
     end else begin
         if (write_hold_count != 16'd0)
             write_hold_count <= write_hold_count - 16'd1;
         case (state)
         S_IDLE: begin
-            ram_ce_n <= 1'b1; ram_oe_n <= 1'b1; ram_we_n <= 1'b1;
             // write_hold_count==1 表示当前正处在保持窗口的最后一拍；本沿接收
             // 新请求只会在完整保持结束之后更新地址/数据，因而可无缝衔接。
             if (req && (write_hold_count <= 16'd1)) begin
                 tag_out  <= tag_in;
-                ram_addr <= addr;
-                ram_wdat <= wdata;
-                ram_be_n <= (|wstrb) ? ~wstrb : 4'h0;   // 读：全字节使能
-                ram_ce_n <= 1'b0;
-                ram_oe_n <= (|wstrb) ? 1'b1 : 1'b0;     // 读拉低 oe
-                ram_we_n <= (|wstrb) ? 1'b0 : 1'b1;     // 写拉低 we
                 cnt      <= (|wstrb) ? WRITE_COUNT_INIT : READ_COUNT_INIT;
                 widx     <= 3'b0;
                 len_r    <= len;
+                write_r  <= |wstrb;
                 state    <= S_ACC;
             end
         end
@@ -100,18 +94,66 @@ always @(posedge clk or posedge reset) begin
             if (cnt != 16'd0) begin
                 cnt <= cnt - 16'd1;
             end else if (widx == len_r) begin           // 最后一字（含单字）
-                ram_ce_n <= 1'b1; ram_oe_n <= 1'b1;
-                ram_we_n <= 1'b1;                        // 写：上升沿锁存
-                if (!ram_we_n)
+                if (write_r)
                     write_hold_count <= WRITE_HOLD_INIT;
                 state    <= S_IDLE;                      // 下一拍可接新请求
             end else begin                               // 突发：推进到下一字（CE/OE 不抬）
                 widx     <= widx + 3'd1;
-                ram_addr <= ram_addr + 20'd1;
                 cnt      <= READ_COUNT_INIT;
             end
         end
         default: state <= S_IDLE;
+        endcase
+    end
+end
+
+// 只有直接连到板级 SRAM 的引脚寄存器使用异步复位。这样即使 PLL 尚未
+// 输出 cpu_clk，CE#/OE#/WE# 和 FPGA 数据线驱动也会立即回到安全状态；
+// 复位释放仍由顶层 cpu_reset 的同步释放链保证。
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        ram_ce_n   <= 1'b1;
+        ram_oe_n   <= 1'b1;
+        ram_we_n   <= 1'b1;
+        ram_be_n   <= 4'hf;
+        ram_addr   <= 20'b0;
+        ram_wdat   <= 32'b0;
+        ram_wdrive <= 1'b0;
+    end else begin
+        case (state)
+        S_IDLE: begin
+            ram_ce_n <= 1'b1;
+            ram_oe_n <= 1'b1;
+            ram_we_n <= 1'b1;
+            if (req && (write_hold_count <= 16'd1)) begin
+                ram_addr   <= addr;
+                ram_wdat   <= wdata;
+                ram_be_n   <= (|wstrb) ? ~wstrb : 4'h0;
+                ram_ce_n   <= 1'b0;
+                ram_oe_n   <= (|wstrb) ? 1'b1 : 1'b0;
+                ram_we_n   <= (|wstrb) ? 1'b0 : 1'b1;
+                ram_wdrive <= |wstrb;
+            end else if (write_hold_count <= 16'd1) begin
+                ram_wdrive <= 1'b0;
+            end
+        end
+        S_ACC: begin
+            if ((cnt == 16'd0) && (widx == len_r)) begin
+                ram_ce_n <= 1'b1;
+                ram_oe_n <= 1'b1;
+                ram_we_n <= 1'b1;                       // 写：上升沿锁存
+                if (!write_r)
+                    ram_wdrive <= 1'b0;
+            end else if (cnt == 16'd0) begin
+                ram_addr <= ram_addr + 20'd1;           // 连读下一字
+            end
+        end
+        default: begin
+            ram_ce_n   <= 1'b1;
+            ram_oe_n   <= 1'b1;
+            ram_we_n   <= 1'b1;
+            ram_wdrive <= 1'b0;
+        end
         endcase
     end
 end
