@@ -8,9 +8,11 @@ frequency=""
 jobs=4
 recreate_project=0
 output_dir=""
-sram_read_ns=60
-sram_write_pulse_ns=60
-sram_write_hold_ns=20
+sram_read_ns=20
+sram_write_pulse_ns=20
+sram_write_hold_mode="cycles"
+sram_write_hold_ns=""
+sram_write_hold_cycles=1
 print_config=0
 
 usage() {
@@ -25,11 +27,13 @@ usage() {
 选项：
   -f, --freq MHz      CPU 频率，例如 50、100、92.5
   -j, --jobs N        Vivado 并行任务数，默认 4
-  --sram-read-ns NS   SRAM 读访问时间，默认 60 ns
+  --sram-read-ns NS   SRAM 读访问时间，默认 20 ns
   --sram-write-pulse-ns NS
-                      SRAM 写脉冲时间，默认 60 ns
+                      SRAM 写脉冲时间，默认 20 ns
   --sram-write-hold-ns NS
-                      WE# 上升后的地址/数据保持时间，默认 20 ns
+                      按纳秒配置 WE# 上升后的地址/数据保持
+  --sram-write-hold-cycles N
+                      按拍数配置写后保持，默认固定 1 拍
   --print-config      只显示 PLL 和 SRAM 周期换算，不启动 Vivado
   --vivado PATH       Windows Vivado 路径
   --recreate-project  重建 fpga/project
@@ -68,6 +72,13 @@ while (( $# > 0 )); do
         --sram-write-hold-ns)
             (( $# >= 2 )) || die "--sram-write-hold-ns 需要纳秒数"
             sram_write_hold_ns="$2"
+            sram_write_hold_mode="ns"
+            shift 2
+            ;;
+        --sram-write-hold-cycles)
+            (( $# >= 2 )) || die "--sram-write-hold-cycles 需要拍数"
+            sram_write_hold_cycles="$2"
+            sram_write_hold_mode="cycles"
             shift 2
             ;;
         --print-config)
@@ -106,12 +117,23 @@ done
 [[ -n "$frequency" ]] || die "必须用 --freq MHz 指定 CPU 频率"
 [[ "$frequency" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "非法频率：$frequency"
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || die "--jobs 必须是正整数"
-for timing_value in "$sram_read_ns" "$sram_write_pulse_ns" "$sram_write_hold_ns"; do
+for timing_value in "$sram_read_ns" "$sram_write_pulse_ns"; do
     [[ "$timing_value" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
         die "SRAM 时序必须是正数纳秒：$timing_value"
     awk -v value="$timing_value" 'BEGIN { exit !(value > 0.0) }' ||
         die "SRAM 时序必须大于 0 ns：$timing_value"
 done
+if [[ "$sram_write_hold_mode" == "ns" ]]; then
+    [[ "$sram_write_hold_ns" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+        die "SRAM 写保持必须是正数纳秒：$sram_write_hold_ns"
+    awk -v value="$sram_write_hold_ns" 'BEGIN { exit !(value > 0.0) }' ||
+        die "SRAM 写保持必须大于 0 ns：$sram_write_hold_ns"
+else
+    [[ "$sram_write_hold_cycles" =~ ^[1-9][0-9]*$ ]] ||
+        die "--sram-write-hold-cycles 必须是正整数"
+    (( sram_write_hold_cycles <= 65535 )) ||
+        die "SRAM 写保持周期数超过 65535"
+fi
 
 # Artix-7 PLLE2：输入 50 MHz，PFD >= 19 MHz，VCO 800..1600 MHz。
 # 在所有整数参数中选择频差最小、其次 VCO 较低的一组。
@@ -173,8 +195,10 @@ sram_read_cycles="$(ns_to_cycles "$sram_read_ns")" ||
     die "SRAM 读访问周期数超过 65535"
 sram_write_cycles="$(ns_to_cycles "$sram_write_pulse_ns")" ||
     die "SRAM 写脉冲周期数超过 65535"
-sram_write_hold_cycles="$(ns_to_cycles "$sram_write_hold_ns")" ||
-    die "SRAM 写保持周期数超过 65535"
+if [[ "$sram_write_hold_mode" == "ns" ]]; then
+    sram_write_hold_cycles="$(ns_to_cycles "$sram_write_hold_ns")" ||
+        die "SRAM 写保持周期数超过 65535"
+fi
 sram_read_effective_ns="$(cycles_to_ns "$sram_read_cycles")"
 sram_write_effective_ns="$(cycles_to_ns "$sram_write_cycles")"
 sram_write_hold_effective_ns="$(cycles_to_ns "$sram_write_hold_cycles")"
@@ -182,7 +206,11 @@ sram_write_hold_effective_ns="$(cycles_to_ns "$sram_write_hold_cycles")"
 echo "==> 配置 ${frequency} MHz（PLL ${pll_mult}/${pll_divclk}/${pll_outdiv}，实际 ${actual_mhz} MHz）"
 echo "    SRAM 读 : ${sram_read_ns} ns -> ${sram_read_cycles} 拍（实际 ${sram_read_effective_ns} ns）"
 echo "    SRAM 写 : ${sram_write_pulse_ns} ns -> ${sram_write_cycles} 拍（实际 ${sram_write_effective_ns} ns）"
-echo "    写后保持: ${sram_write_hold_ns} ns -> ${sram_write_hold_cycles} 拍（实际 ${sram_write_hold_effective_ns} ns）"
+if [[ "$sram_write_hold_mode" == "ns" ]]; then
+    echo "    写后保持: ${sram_write_hold_ns} ns -> ${sram_write_hold_cycles} 拍（实际 ${sram_write_hold_effective_ns} ns）"
+else
+    echo "    写后保持: 固定 ${sram_write_hold_cycles} 拍（实际 ${sram_write_hold_effective_ns} ns）"
+fi
 
 if (( print_config )); then
     exit 0
@@ -233,7 +261,12 @@ sha256sum "$bit_file" >"${bit_file}.sha256"
     printf 'SRAM_READ_EFFECTIVE_NS=%s\n' "$sram_read_effective_ns"
     printf 'SRAM_WRITE_PULSE_REQUESTED_NS=%s\n' "$sram_write_pulse_ns"
     printf 'SRAM_WRITE_PULSE_EFFECTIVE_NS=%s\n' "$sram_write_effective_ns"
-    printf 'SRAM_WRITE_HOLD_REQUESTED_NS=%s\n' "$sram_write_hold_ns"
+    printf 'SRAM_WRITE_HOLD_MODE=%s\n' "$sram_write_hold_mode"
+    if [[ "$sram_write_hold_mode" == "ns" ]]; then
+        printf 'SRAM_WRITE_HOLD_REQUESTED_NS=%s\n' "$sram_write_hold_ns"
+    else
+        printf 'SRAM_WRITE_HOLD_REQUESTED_CYCLES=%s\n' "$sram_write_hold_cycles"
+    fi
     printf 'SRAM_WRITE_HOLD_EFFECTIVE_NS=%s\n' "$sram_write_hold_effective_ns"
     printf 'BITSTREAM=%s\n' "$bit_file"
     printf 'BITSTREAM_SHA256=%s\n' "$(cut -d ' ' -f 1 "${bit_file}.sha256")"

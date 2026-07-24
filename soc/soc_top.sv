@@ -117,23 +117,23 @@ wire        ext_ram_ce_n_int;
 wire        ext_ram_oe_n_int;
 wire        ext_ram_we_n_int;
 
-// BaseRAM 低 8 位与板载下载控制器共享。PLL 尚未起振时，后级同步逻辑没有
-// 时钟可执行 reset 分支，因此不能直接把控制器寄存器接到引脚。用带 INIT 的
-// cpu_reset 在顶层强制撤销片选/读写使能和数据驱动，避免下载 monitor 时争用
-// SRAM；ExtRAM 同样采用安全门控。
+// BaseRAM 低 8 位与板载下载控制器共享。两个 sram_ctrl 使用 cpu_reset 异步
+// 置位，即使 PLL 尚未起振也会直接把 CE#/OE#/WE# 和数据输出使能复位到安全
+// 状态。因此这里可以直接连接已寄存的控制器输出，避免 cpu_reset 组合门控
+// 64 位 OBUFT 所形成的高扇出关键路径。
 assign base_ram_addr = base_ram_addr_int;
-assign base_ram_be_n = io_active ? base_ram_be_n_int : 4'hf;
-assign base_ram_ce_n = io_active ? base_ram_ce_n_int : 1'b1;
-assign base_ram_oe_n = io_active ? base_ram_oe_n_int : 1'b1;
-assign base_ram_we_n = io_active ? base_ram_we_n_int : 1'b1;
-assign base_ram_data = (io_active & base_ram_wdrive) ? base_ram_wdat : 32'bz;
+assign base_ram_be_n = base_ram_be_n_int;
+assign base_ram_ce_n = base_ram_ce_n_int;
+assign base_ram_oe_n = base_ram_oe_n_int;
+assign base_ram_we_n = base_ram_we_n_int;
+assign base_ram_data = base_ram_wdrive ? base_ram_wdat : 32'bz;
 
 assign ext_ram_addr = ext_ram_addr_int;
-assign ext_ram_be_n = io_active ? ext_ram_be_n_int : 4'hf;
-assign ext_ram_ce_n = io_active ? ext_ram_ce_n_int : 1'b1;
-assign ext_ram_oe_n = io_active ? ext_ram_oe_n_int : 1'b1;
-assign ext_ram_we_n = io_active ? ext_ram_we_n_int : 1'b1;
-assign ext_ram_data = (io_active & ext_ram_wdrive) ? ext_ram_wdat : 32'bz;
+assign ext_ram_be_n = ext_ram_be_n_int;
+assign ext_ram_ce_n = ext_ram_ce_n_int;
+assign ext_ram_oe_n = ext_ram_oe_n_int;
+assign ext_ram_we_n = ext_ram_we_n_int;
+assign ext_ram_data = ext_ram_wdrive ? ext_ram_wdat : 32'bz;
 
 wire uart_txd;
 wire uart_rxd = UART_RX;

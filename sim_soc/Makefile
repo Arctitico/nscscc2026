@@ -83,6 +83,10 @@ uart:
 sram-timing:
 	verilator $(TFLAGS) $(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv
 	./obj_dir/Vtb_sram_ctrl
+	verilator $(TFLAGS) -o Vtb_sram_ctrl_fast \
+		-GREAD_CYCLES=1 -GWRITE_CYCLES=1 -GWRITE_HOLD_CYCLES=1 \
+		$(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv
+	./obj_dir/Vtb_sram_ctrl_fast
 
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv

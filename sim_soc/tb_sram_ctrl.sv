@@ -1,10 +1,10 @@
 `timescale 1ns/1ps
 
-module tb_sram_ctrl;
-
-localparam integer READ_CYCLES       = 4;
-localparam integer WRITE_CYCLES      = 3;
-localparam integer WRITE_HOLD_CYCLES = 2;
+module tb_sram_ctrl #(
+    parameter integer READ_CYCLES       = 4,
+    parameter integer WRITE_CYCLES      = 3,
+    parameter integer WRITE_HOLD_CYCLES = 2
+);
 
 reg         clk = 1'b0;
 reg         reset = 1'b1;

@@ -65,11 +65,13 @@ assign beat_last = ok && (widx == len_r);
 assign rdata     = ram_rdat;                            // 读：末拍数据已稳定，组合直通
 assign ram_wdrive = ~ram_we_n | (write_hold_count != 16'd0);
 
-always @(posedge clk) begin
+// reset 异步置位，使 PLL 尚未输出 cpu_clk 时物理 SRAM 控制信号也能立即
+// 回到安全状态；释放仍由顶层 cpu_reset 的同步释放链保证。
+always @(posedge clk or posedge reset) begin
     if (reset) begin
         state    <= S_IDLE;
         ram_ce_n <= 1'b1; ram_oe_n <= 1'b1; ram_we_n <= 1'b1;
-        ram_be_n <= 4'h0; ram_addr <= 20'b0; ram_wdat <= 32'b0;
+        ram_be_n <= 4'hf; ram_addr <= 20'b0; ram_wdat <= 32'b0;
         tag_out  <= 1'b0; cnt <= 16'b0; widx <= 3'b0; len_r <= 3'b0;
         write_hold_count <= 16'b0;
     end else begin
