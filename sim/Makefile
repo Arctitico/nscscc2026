@@ -27,6 +27,7 @@ lint:
 #       make rand SEED=42 N=200
 #       make fuzz            (循环 SEED=1..COUNT, 首个失败即停)
 #       make p1-regress      (FIFO 定向用例 + 高反压/分支随机 DiffTest)
+#       make mul-pipe        (连续 MUL II=1 + RAW/前递定向验证)
 SEED  ?= 1
 N     ?= 120
 MR    ?= 0.30
@@ -40,6 +41,11 @@ rand:
 	python3 randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
 	./obj_dir/Vtb_rand
+
+mul-pipe:
+	python3 fifo_regress.py --case mul_pipe >/dev/null
+	verilator $(RFLAGS) $(SRCS) tb_rand.sv
+	./obj_dir/Vtb_rand +CHECK_MUL_PIPE
 
 # 编译一次, 循环换 seed 重新生成激励并跑 (COUNT 个种子)
 COUNT ?= 50

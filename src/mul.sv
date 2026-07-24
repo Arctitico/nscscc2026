@@ -1,9 +1,10 @@
 // ============================================================================
-// 32 x 32 两级流水乘法器
+// 32 x 32 EX1/EX2 两级流水乘法器的乘积级
 //
-// 流水级：输入 A/B 寄存器 -> 乘积 P 寄存器。输入在 N 拍被接受，
-// out_valid 在 N+1 拍出现；输出阻塞时冻结整条流水线并保持结果稳定。
-// 数据寄存器不带异步复位，便于 Vivado 吸收到 DSP48E1 内部寄存器。
+// EX1 的 mul_src1/mul_src2 已经是专用、无复位的 A/B 输入寄存器；本模块
+// 只实现 EX2 的乘积 P 寄存器。于是 M0 在 EX1、M1 紧随其后时，可以在
+// 同一边沿消费 M0 的 P 结果并锁存 M1 的新乘积，稳态启动间隔为一拍。
+// 乘积寄存器不带复位，便于 Vivado 吸收到 DSP48E1 内部寄存器。
 // ============================================================================
 module mul (
     input  wire        clk,
@@ -21,42 +22,33 @@ module mul (
     output wire [31:0] c_high
 );
 
-reg stage_a_valid;
 reg stage_p_valid;
 
-reg signed [32:0] operand_a_r;
-reg signed [32:0] operand_b_r;
 reg signed [65:0] product_p_r;
+wire signed [32:0] operand_a = is_signed ? {a_in[31], a_in}
+                                         : {1'b0, a_in};
+wire signed [32:0] operand_b = is_signed ? {b_in[31], b_in}
+                                         : {1'b0, b_in};
 
-// 整体冻结可保证任意背压下每一级的 valid 与载荷保持对应。
-wire pipeline_advance = ~stage_p_valid | out_ready;
+// 输出被消费或当前为空时，P 级可以原子接收下一条乘法。
+wire stage_p_advance = ~stage_p_valid | out_ready;
 
-assign in_ready  = pipeline_advance;
+assign in_ready  = stage_p_advance;
 assign out_valid = stage_p_valid;
 assign c_low     = product_p_r[31:0];
 assign c_high    = product_p_r[63:32];
 
 always @(posedge clk) begin
-    if (reset) begin
-        stage_a_valid <= 1'b0;
+    if (reset)
         stage_p_valid <= 1'b0;
-    end
-    else if (pipeline_advance) begin
-        stage_a_valid <= in_valid;
-        stage_p_valid <= stage_a_valid;
-    end
+    else if (stage_p_advance)
+        stage_p_valid <= in_valid;
 end
 
-// 数据通路刻意使用同步、无复位寄存器，以匹配 DSP48E1 内部流水寄存器。
+// 数据通路刻意使用同步、无复位寄存器，以匹配 DSP48E1 的 P 寄存器。
 always @(posedge clk) begin
-    if (pipeline_advance) begin
-        if (in_valid) begin
-            operand_a_r <= is_signed ? {a_in[31], a_in} : {1'b0, a_in};
-            operand_b_r <= is_signed ? {b_in[31], b_in} : {1'b0, b_in};
-        end
-        if (stage_a_valid)
-            product_p_r <= operand_a_r * operand_b_r;
-    end
+    if (stage_p_advance & in_valid)
+        product_p_r <= operand_a * operand_b;
 end
 
 endmodule

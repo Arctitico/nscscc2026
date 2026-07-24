@@ -1,8 +1,9 @@
 // ============================================================================
-// Execute 2 / Completion：等待乘法器和 D-cache 响应，生成最终写回数据。
+// Execute 2 / Completion：接收已寄存乘积并等待 D-cache 响应，生成写回数据。
 //
-// 一个 bundle 可以同时含一个 mul 和一个 mem。两者可能在不同拍完成，因此
-// 分别锁存先到的完成状态及载荷；只有 s0/s1（有效时）都完成才向 WB 前进。
+// EX1 的专用乘法操作数寄存器与本级乘积寄存器组成 II=1 的两级乘法流水。
+// 一个 bundle 可以同时含一个 mul 和一个 mem；若访存较慢，本级仍分别锁存
+// 先到的完成状态及载荷，只有 s0/s1（有效时）都完成才向 WB 前进。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -43,6 +44,11 @@ wire ex_v1_eff = ex2_v1;
 
 wire incoming_mul1 = EX1_to_EX2_BUS.v1 & EX1_to_EX2_BUS.s1.is_mul;
 wire incoming_mul  = EX1_to_EX2_BUS.s0.is_mul | incoming_mul1;
+// IS 保证一个 bundle 至多一条 MUL。操作数选择只需看已寄存的 slot0
+// 类型；不要使用含 mispred0 精确 kill 的 v1，否则会形成
+// PC/分支比较 -> slot1 选择 -> DSP 数据口的长组合路径。被 kill 时
+// incoming_mul=0，乘法器不会采样此处的 don't-care 操作数。
+wire incoming_mul_sel1 = ~EX1_to_EX2_BUS.s0.is_mul;
 wire ex2_mul1      = ex2_r.v1 & s1.is_mul;
 wire ex2_has_mul   = s0.is_mul | ex2_mul1;
 wire ex2_has_mem   = s0.is_mem | (ex2_r.v1 & s1.is_mem);
@@ -83,10 +89,10 @@ assign mul_out_ready = ex2_valid & ex2_has_mul;
 mul u_mul (
     .clk(clk), .reset(reset),
     .in_valid(mul_in_valid), .in_ready(mul_in_ready),
-    .a_in(incoming_mul1 ? EX1_to_EX2_BUS.s1.mul_src1
-                        : EX1_to_EX2_BUS.s0.mul_src1),
-    .b_in(incoming_mul1 ? EX1_to_EX2_BUS.s1.mul_src2
-                        : EX1_to_EX2_BUS.s0.mul_src2),
+    .a_in(incoming_mul_sel1 ? EX1_to_EX2_BUS.s1.mul_src1
+                            : EX1_to_EX2_BUS.s0.mul_src1),
+    .b_in(incoming_mul_sel1 ? EX1_to_EX2_BUS.s1.mul_src2
+                            : EX1_to_EX2_BUS.s0.mul_src2),
     .is_signed(1'b1),
     .out_valid(mul_out_valid), .out_ready(mul_out_ready),
     .c_low(mul_low), .c_high(mul_high_unused)

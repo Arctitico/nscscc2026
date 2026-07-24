@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate directed whole-core regressions for the instruction FIFO."""
+"""Generate directed whole-core regressions for issue/execute corner cases."""
 
 import argparse
 
@@ -158,6 +158,15 @@ def redirect_case():
     p.label("taken_c")
     p.alu("add.w", 16, 12, 3)
     p.store(16, 8)
+
+    # A taken slot0 branch may be paired with a slot1 MUL.  The redirect must
+    # suppress the MUL's valid token even though EX2 selects its operand wires
+    # independently of the branch kill signal for timing.
+    p.branch("beq", "mul_killed", 1, 1)
+    p.alu("mul.w", 17, 3, 4)          # Poison: must not write r17.
+    p.label("mul_killed")
+    p.addi(18, 0, 0x18)
+    p.store(18, 12)
     p.halt()
     return p.resolve()
 
@@ -180,9 +189,45 @@ def pressure_case():
     return p.resolve()
 
 
+def mul_pipe_case():
+    """Sustain independent MULs, then cover MUL RAW and ALU-to-MUL forwarding."""
+    p = Program()
+    init_scratch(p)
+    p.addi(1, 0, 3)
+    p.addi(2, 0, 5)
+    p.addi(3, 0, 7)
+    p.addi(4, 0, -11)
+
+    # The miss lets the six-entry instruction FIFO build pressure before the
+    # independent run.  A full-rate implementation must then accept MULs on
+    # consecutive clocks while the previous product occupies EX2.
+    p.load(5, 0)
+    for rd in range(8, 24):
+        rj = 1 + ((rd - 8) & 1)
+        rk = 3 + (((rd - 8) >> 1) & 1)
+        p.alu("mul.w", rd, rj, rk)
+
+    # Immediate producer/consumer chains must still wait for EX2 forwarding.
+    p.alu("mul.w", 24, 1, 2)
+    p.alu("mul.w", 25, 24, 3)
+    p.alu("mul.w", 26, 25, 4)
+
+    # Ordinary EX1 forwarding into a following MUL must remain bubble-free.
+    p.addi(27, 1, 9)
+    p.alu("mul.w", 28, 27, 2)
+
+    p.store(8, 0)
+    p.store(23, 4)
+    p.store(26, 8)
+    p.store(28, 12)
+    p.halt()
+    return p.resolve()
+
+
 CASES = {
     "compact": compact_case,
     "conflicts": conflicts_case,
+    "mul_pipe": mul_pipe_case,
     "redirect": redirect_case,
     "pressure": pressure_case,
 }

@@ -136,6 +136,7 @@ module tb_rand;
 
     // ---- 锁步比对（同拍按 slot0、slot1 的程序序检查）----
     integer tptr, errors;
+    integer mul_accept_streak, max_mul_accept_streak, mul_turnovers;
 
     task automatic check_commit(input [31:0] cpc, input [4:0] cwn, input [31:0] cwd);
         if (tptr >= ncommit) begin
@@ -152,9 +153,24 @@ module tb_rand;
     endtask
 
     always @(posedge clk) begin
-        if (resetn) begin
+        if (!resetn) begin
+            mul_accept_streak = 0;
+            max_mul_accept_streak = 0;
+            mul_turnovers = 0;
+        end else begin
             if (|debug_wb_rf_we)  check_commit(debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
             if (|debug_wb1_rf_we) check_commit(debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
+            // mul_in 与 mul_out 同拍握手表示 EX2 正在输出 M(n)，同时从
+            // EX1 接收 M(n+1)。连续握手长度直接验证整核启动间隔为 1。
+            if (u_cpu.u_EX2.mul_in_valid & u_cpu.u_EX2.mul_in_ready) begin
+                mul_accept_streak = mul_accept_streak + 1;
+                if (mul_accept_streak > max_mul_accept_streak)
+                    max_mul_accept_streak = mul_accept_streak;
+                if (u_cpu.u_EX2.mul_out_valid & u_cpu.u_EX2.mul_out_ready)
+                    mul_turnovers = mul_turnovers + 1;
+            end else begin
+                mul_accept_streak = 0;
+            end
             if ($test$plusargs("trace_mem") && data_wr_req)
                 $display("[STORE] pc0=%08x pc1=%08x v1=%0b addr=%08x we=%x data=%08x",
                          u_cpu.u_EX2.s0.pc, u_cpu.u_EX2.s1.pc, u_cpu.u_EX2.ex_v1_eff,
@@ -230,6 +246,16 @@ module tb_rand;
                 $display("  FAIL mem[%08x] = %08x, expected %08x",
                          SCRATCH + k*4, ext_mem[idx(SCRATCH)+k], g_mem[k]);
                 errors = errors + 1;
+            end
+        end
+        if ($test$plusargs("CHECK_MUL_PIPE")) begin
+            if (max_mul_accept_streak < 4 || mul_turnovers < 3) begin
+                $display("  FAIL MUL pipeline streak=%0d turnovers=%0d, expected >=4/>=3",
+                         max_mul_accept_streak, mul_turnovers);
+                errors = errors + 1;
+            end else begin
+                $display("==== MUL PIPELINE PASSED: streak=%0d turnovers=%0d ====",
+                         max_mul_accept_streak, mul_turnovers);
             end
         end
 

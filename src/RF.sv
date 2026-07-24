@@ -106,8 +106,8 @@ wire lu1 = exload_hit(ex1_fwd0, db1.need_rj,  rf_raddr3) |
            exload_hit(ex2_fwd1, db1.need_rkd, rf_raddr4);
 
 wire load_use   = lu0 | (idp.v1 & lu1);
-// EX1 在乘法器前新增了一层寄存，普通前递不再直达 DSP 输入，因此乘法
-// 操作数可与 ALU 操作数共用上述旁路结果，无需额外 ALU-to-MUL 气泡。
+// EX1 的 mul_src1/mul_src2 就是乘法器 A/B 输入级。普通前递先在本级
+// 选定并锁存，下一拍再进入 DSP 乘积级，因此无需额外 ALU-to-MUL 气泡。
 wire rf_ready_go = ~load_use;
 assign RF_allow_in    = ~rf_valid | (rf_ready_go & EX1_allow_in);
 assign RF_to_EX_valid = rf_valid & rf_ready_go & ~flush;
