@@ -11,7 +11,9 @@ module soc_top #(
     parameter integer PLL_DIVCLK_DIVIDE   = 1,
     parameter integer PLL_CLKFBOUT_MULT   = 18,
     parameter integer PLL_CLKOUT0_DIVIDE  = 18,
-    parameter integer SRAM_LATENCY        = 2
+    parameter integer SRAM_READ_CYCLES       = 3,
+    parameter integer SRAM_WRITE_CYCLES      = 3,
+    parameter integer SRAM_WRITE_HOLD_CYCLES = 1
 ) (
     input  wire        clk,
     input  wire        reset,
@@ -170,7 +172,9 @@ mycpu_top u_cpu (
 );
 
 mem_bridge #(
-    .SRAM_LATENCY(SRAM_LATENCY),
+    .SRAM_READ_CYCLES(SRAM_READ_CYCLES),
+    .SRAM_WRITE_CYCLES(SRAM_WRITE_CYCLES),
+    .SRAM_WRITE_HOLD_CYCLES(SRAM_WRITE_HOLD_CYCLES),
     .CLK_FREQ(CPU_CLK_HZ)
 ) u_bridge (
     .clk            (cpu_clk),

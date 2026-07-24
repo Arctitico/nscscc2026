@@ -3,6 +3,7 @@
 #   make        生成 test.hex（复用 ../sim/asm.py）、编译、运行自检
 #   make lint   仅 lint 板级顶层
 #   make uart   连续两字节 UART 物理帧/停止位自检
+#   make sram-timing  SRAM 读/写/写后保持周期参数自检
 #   make supervisor  启动当前 2026 auto kernel 并核对 UART 欢迎字符串
 #   make level1      运行 52 字节/64 项 Fibonacci 第一阶段测试
 #   make clean
@@ -54,6 +55,9 @@ LFLAGS = --binary --timing --top-module tb_level1 -o Vtb_level1 \
 UFLAGS = --binary --timing --top-module tb_uart -o Vtb_uart \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
+TFLAGS = --binary --timing --top-module tb_sram_ctrl -o Vtb_sram_ctrl \
+         -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
+         -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
 
 rand:
 	python3 ../sim/randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
@@ -75,6 +79,10 @@ level1:
 uart:
 	verilator $(UFLAGS) $(SOC_DIR)/uart_phy.sv tb_uart.sv
 	./obj_dir/Vtb_uart
+
+sram-timing:
+	verilator $(TFLAGS) $(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv
+	./obj_dir/Vtb_sram_ctrl
 
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv

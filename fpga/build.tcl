@@ -1,5 +1,5 @@
-if {$argc != 6} {
-    puts stderr "usage: build.tcl <cpu_hz> <pll_divclk> <pll_mult> <pll_out_div> <jobs> <report_dir>"
+if {$argc != 9} {
+    puts stderr "usage: build.tcl <cpu_hz> <pll_divclk> <pll_mult> <pll_out_div> <sram_read_cycles> <sram_write_cycles> <sram_write_hold_cycles> <jobs> <report_dir>"
     exit 2
 }
 
@@ -7,8 +7,11 @@ set cpu_hz     [lindex $argv 0]
 set pll_divclk [lindex $argv 1]
 set pll_mult   [lindex $argv 2]
 set pll_outdiv [lindex $argv 3]
-set jobs       [lindex $argv 4]
-set report_dir [file normalize [lindex $argv 5]]
+set sram_read_cycles       [lindex $argv 4]
+set sram_write_cycles      [lindex $argv 5]
+set sram_write_hold_cycles [lindex $argv 6]
+set jobs       [lindex $argv 7]
+set report_dir [file normalize [lindex $argv 8]]
 set project_file [file normalize ./project/Individual_SoC.xpr]
 
 proc require_run_complete {run_name phase} {
@@ -24,8 +27,9 @@ proc require_run_complete {run_name phase} {
 
 open_project $project_file
 set generics [format \
-    "SIMULATION=0 CPU_CLK_HZ=%s PLL_DIVCLK_DIVIDE=%s PLL_CLKFBOUT_MULT=%s PLL_CLKOUT0_DIVIDE=%s" \
-    $cpu_hz $pll_divclk $pll_mult $pll_outdiv]
+    "SIMULATION=0 CPU_CLK_HZ=%s PLL_DIVCLK_DIVIDE=%s PLL_CLKFBOUT_MULT=%s PLL_CLKOUT0_DIVIDE=%s SRAM_READ_CYCLES=%s SRAM_WRITE_CYCLES=%s SRAM_WRITE_HOLD_CYCLES=%s" \
+    $cpu_hz $pll_divclk $pll_mult $pll_outdiv \
+    $sram_read_cycles $sram_write_cycles $sram_write_hold_cycles]
 set_property generic $generics [get_filesets sources_1]
 update_compile_order -fileset sources_1
 
@@ -86,6 +90,9 @@ puts $summary "CPU_CLK_HZ_GENERIC=$cpu_hz"
 puts $summary "PLL_DIVCLK_DIVIDE=$pll_divclk"
 puts $summary "PLL_CLKFBOUT_MULT=$pll_mult"
 puts $summary "PLL_CLKOUT0_DIVIDE=$pll_outdiv"
+puts $summary "SRAM_READ_CYCLES=$sram_read_cycles"
+puts $summary "SRAM_WRITE_CYCLES=$sram_write_cycles"
+puts $summary "SRAM_WRITE_HOLD_CYCLES=$sram_write_hold_cycles"
 puts $summary [format "ACTUAL_CPU_FREQ_MHZ=%.6f" $actual_frequency]
 puts $summary "CPU_PERIOD_NS=$cpu_period"
 puts $summary "DESIGN_SETUP_WNS_NS=$setup_wns"

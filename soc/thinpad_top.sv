@@ -14,7 +14,12 @@
 //   0x1c400000–0x1c7fffff→ExtRAM，0x1f000000–0x1f0fffff→UART。
 // UART_DATA=0x1f000000，UART_STATUS=0x1f000005；复位 PC=0x1c000000。
 // ============================================================================
-module thinpad_top (
+module thinpad_top #(
+    parameter integer SRAM_READ_CYCLES       = 3,
+    parameter integer SRAM_WRITE_CYCLES      = 3,
+    parameter integer SRAM_WRITE_HOLD_CYCLES = 1,
+    parameter integer CLK_FREQ               = 50_000_000
+) (
     input  wire        clk_50M,        // 50MHz 时钟输入
     input  wire        clk_11M0592,    // 11.0592MHz 时钟输入（备用，可不用）
 
@@ -138,7 +143,12 @@ mycpu_top u_cpu (
 );
 
 // ---------------- 访存桥 ----------------
-mem_bridge #(.SRAM_LATENCY(2)) u_bridge (
+mem_bridge #(
+    .SRAM_READ_CYCLES(SRAM_READ_CYCLES),
+    .SRAM_WRITE_CYCLES(SRAM_WRITE_CYCLES),
+    .SRAM_WRITE_HOLD_CYCLES(SRAM_WRITE_HOLD_CYCLES),
+    .CLK_FREQ(CLK_FREQ)
+) u_bridge (
     .clk            (clk            ),
     .reset          (rst            ),
     .inst_rd_req    (inst_rd_req    ),

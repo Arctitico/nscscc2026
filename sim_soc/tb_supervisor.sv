@@ -74,7 +74,11 @@ module tb_supervisor;
         .debug_wb1_rf_wnum(debug_wb1_rf_wnum), .debug_wb1_rf_wdata(debug_wb1_rf_wdata)
     );
 
-    mem_bridge #(.SRAM_LATENCY(2)) u_bridge (
+    mem_bridge #(
+        .SRAM_READ_CYCLES(3),
+        .SRAM_WRITE_CYCLES(3),
+        .SRAM_WRITE_HOLD_CYCLES(1)
+    ) u_bridge (
         .clk(clk), .reset(reset),
         .inst_rd_req(inst_rd_req), .inst_rd_addr(inst_rd_addr),
         .inst_rd_rdy(inst_rd_rdy), .inst_ret_valid(inst_ret_valid),

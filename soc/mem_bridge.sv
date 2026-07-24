@@ -18,7 +18,9 @@
 // 三态：物理 inout 数据线在板级顶层 thinpad_top 处理。
 // ============================================================================
 module mem_bridge #(
-    parameter integer SRAM_LATENCY = 2,
+    parameter integer SRAM_READ_CYCLES = 3,
+    parameter integer SRAM_WRITE_CYCLES = 3,
+    parameter integer SRAM_WRITE_HOLD_CYCLES = 1,
     parameter integer LINE_WORDS   = 4,    // 取指突发字数（与 icache 行宽一致）
     parameter integer CLK_FREQ     = 50_000_000
 ) (
@@ -100,7 +102,11 @@ wire        base_tagin     = base_pick_data ? 1'b1 : 1'b0;
 wire        base_ok, base_beat_last, base_tagout;
 wire [31:0] base_rdata;
 
-sram_ctrl #(.LATENCY(SRAM_LATENCY)) u_base (
+sram_ctrl #(
+    .READ_CYCLES(SRAM_READ_CYCLES),
+    .WRITE_CYCLES(SRAM_WRITE_CYCLES),
+    .WRITE_HOLD_CYCLES(SRAM_WRITE_HOLD_CYCLES)
+) u_base (
     .clk     (clk          ), .reset(reset),
     .ram_addr(base_ram_addr), .ram_be_n(base_ram_be_n),
     .ram_ce_n(base_ram_ce_n), .ram_oe_n(base_ram_oe_n), .ram_we_n(base_ram_we_n),
@@ -139,7 +145,11 @@ wire        ext_tagin     = ext_pick_data ? 1'b1 : 1'b0;
 wire        ext_ok, ext_beat_last, ext_tagout;
 wire [31:0] ext_rdata;
 
-sram_ctrl #(.LATENCY(SRAM_LATENCY)) u_ext (
+sram_ctrl #(
+    .READ_CYCLES(SRAM_READ_CYCLES),
+    .WRITE_CYCLES(SRAM_WRITE_CYCLES),
+    .WRITE_HOLD_CYCLES(SRAM_WRITE_HOLD_CYCLES)
+) u_ext (
     .clk     (clk         ), .reset(reset),
     .ram_addr(ext_ram_addr), .ram_be_n(ext_ram_be_n),
     .ram_ce_n(ext_ram_ce_n), .ram_oe_n(ext_ram_oe_n), .ram_we_n(ext_ram_we_n),
