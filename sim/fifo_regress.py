@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Generate directed whole-core regressions for the instruction FIFO."""
+
+import argparse
+
+from randgen import (
+    BASE,
+    SCRATCH,
+    Golden,
+    OP_3R,
+    OP_12,
+    enc_1ri20,
+    enc_2ri12,
+    enc_2ri16,
+    enc_3r,
+    enc_i26,
+)
+
+
+MEM_WORDS = 64
+
+
+class Program:
+    def __init__(self):
+        self.words = []
+        self.labels = {}
+        self.fixups = []
+
+    def emit(self, word):
+        self.words.append(word & 0xFFFFFFFF)
+
+    def label(self, name):
+        if name in self.labels:
+            raise ValueError("duplicate label: %s" % name)
+        self.labels[name] = len(self.words)
+
+    def addi(self, rd, rj, imm):
+        self.emit(enc_2ri12(OP_12["addi.w"], rd, rj, imm))
+
+    def alu(self, op, rd, rj, rk):
+        self.emit(enc_3r(OP_3R[op], rd, rj, rk))
+
+    def load(self, rd, offset):
+        self.emit(enc_2ri12(OP_12["ld.w"], rd, 31, offset))
+
+    def store(self, rd, offset):
+        self.emit(enc_2ri12(OP_12["st.w"], rd, 31, offset))
+
+    def branch(self, op, label, rj=0, rd=0):
+        self.fixups.append((len(self.words), op, label, rj, rd))
+        self.emit(0)
+
+    def halt(self):
+        self.label("halt")
+        self.branch("b", "halt")
+
+    def resolve(self):
+        words = list(self.words)
+        for index, op, label, rj, rd in self.fixups:
+            if label not in self.labels:
+                raise ValueError("unknown label: %s" % label)
+            offset = self.labels[label] - index
+            if op == "b":
+                words[index] = enc_i26(0x50000000, offset)
+            elif op == "beq":
+                words[index] = enc_2ri16(0x58000000, rd, rj, offset)
+            elif op == "bne":
+                words[index] = enc_2ri16(0x5C000000, rd, rj, offset)
+            else:
+                raise ValueError("unknown branch: %s" % op)
+        return words
+
+
+def init_scratch(p):
+    p.emit(enc_1ri20(0x14000000, 31, SCRATCH >> 12))
+
+
+def compact_case():
+    """Alternate one- and two-instruction issue across natural fetch groups."""
+    p = Program()
+    for i in range(7):
+        a = 1 + i * 4
+        b = a + 1
+        c = a + 2
+        d = a + 3
+        p.addi(a, 0, i + 1)
+        p.alu("add.w", b, a, a)       # Adjacent RAW: must split.
+        p.addi(c, 0, 0x40 + i)
+        p.addi(d, 0, 0x60 + i)        # Independent pair: may co-issue.
+        p.alu("xor", a, c, d)
+        p.alu("add.w", b, a, c)       # RAW after compaction.
+
+    p.addi(29, 0, 0x111)
+    p.addi(29, 0, 0x222)              # Adjacent WAW: must split.
+    p.alu("add.w", 30, 29, 1)
+    p.addi(29, 0, 0x333)              # WAR is architecturally legal.
+    p.halt()
+    return p.resolve()
+
+
+def conflicts_case():
+    """Exercise the dependency rules used by the co-issue decision."""
+    p = Program()
+    init_scratch(p)
+    p.addi(1, 0, 3)
+    p.addi(2, 0, 5)
+
+    p.alu("add.w", 3, 1, 2)
+    p.alu("sub.w", 4, 3, 1)           # RAW through slot0 result.
+    p.alu("xor", 5, 4, 2)
+    p.alu("or", 6, 5, 3)              # RAW through slot0 result.
+
+    p.addi(7, 0, 0x71)
+    p.addi(7, 0, 0x72)                # WAW.
+    p.alu("add.w", 8, 7, 1)
+    p.addi(7, 0, 0x73)                # WAR.
+
+    p.store(8, 0)
+    p.load(9, 0)
+    p.alu("add.w", 10, 9, 2)          # Load-use.
+    p.store(10, 4)
+    p.load(11, 4)
+    p.alu("mul.w", 12, 11, 1)
+    p.addi(13, 0, 13)                 # Independent of multiply.
+    p.alu("mul.w", 14, 12, 2)
+    p.alu("add.w", 15, 13, 1)
+    p.halt()
+    return p.resolve()
+
+
+def redirect_case():
+    """Put poison instructions behind redirects at different alignments."""
+    p = Program()
+    init_scratch(p)
+    p.addi(1, 0, 1)
+    p.store(0, 0)
+
+    p.branch("beq", "taken_a", 1, 1)
+    p.addi(10, 0, 0x111)              # Poison: may enter slot1.
+    p.store(10, 0)                    # Poison: must not reach memory.
+    p.label("taken_a")
+    p.load(11, 0)
+
+    p.addi(2, 0, 2)                   # Shift the next branch alignment.
+    p.branch("bne", "bad_b", 1, 1)    # Not taken.
+    p.addi(12, 0, 0x12)
+    p.branch("b", "after_b")
+    p.label("bad_b")
+    p.addi(13, 0, 0x333)              # Poison.
+    p.store(13, 4)                    # Poison.
+    p.label("after_b")
+
+    p.addi(3, 0, 3)
+    p.addi(4, 0, 4)
+    p.branch("beq", "taken_c", 3, 3)
+    p.addi(14, 0, 0x444)              # Poison at another FIFO position.
+    p.addi(15, 0, 0x555)              # Poison.
+    p.label("taken_c")
+    p.alu("add.w", 16, 12, 3)
+    p.store(16, 8)
+    p.halt()
+    return p.resolve()
+
+
+def pressure_case():
+    """Keep the back end busy long enough for the six-entry FIFO to fill/drain."""
+    p = Program()
+    init_scratch(p)
+    for i in range(12):
+        value = i + 1
+        p.addi(1, 0, value)
+        p.store(1, i * 4)
+        p.load(2, i * 4)
+        p.alu("add.w", 3, 2, 1)       # Load-use stall.
+        p.alu("mul.w", 4, 3, 1)       # Multi-cycle backpressure.
+        p.store(4, (i + 16) * 4)
+        p.addi(5, 0, 0x80 + i)        # Independent work behind the stall.
+        p.alu("xor", 6, 5, 1)
+    p.halt()
+    return p.resolve()
+
+
+CASES = {
+    "compact": compact_case,
+    "conflicts": conflicts_case,
+    "redirect": redirect_case,
+    "pressure": pressure_case,
+}
+
+
+def write_case(words, out_dir):
+    golden = Golden()
+    golden.run(words)
+
+    with open(out_dir + "/test.hex", "w") as f:
+        for word in words:
+            f.write("%08x\n" % word)
+    with open(out_dir + "/golden_trace.hex", "w") as f:
+        for pc, rd, value in golden.trace:
+            f.write("%08x %02x %08x\n" % (pc, rd, value))
+    with open(out_dir + "/golden_mem.hex", "w") as f:
+        for index in range(MEM_WORDS):
+            f.write("%08x\n" % golden.lw(SCRATCH + index * 4))
+    with open(out_dir + "/golden.meta", "w") as f:
+        f.write("%d %d\n" % (len(golden.trace), MEM_WORDS))
+    return len(golden.trace)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--case", required=True, choices=sorted(CASES))
+    parser.add_argument("--out-dir", default=".")
+    args = parser.parse_args()
+
+    words = CASES[args.case]()
+    commits = write_case(words, args.out_dir.rstrip("/"))
+    print("case=%s words=%d commits=%d base=%08x" %
+          (args.case, len(words), commits, BASE))
+
+
+if __name__ == "__main__":
+    main()

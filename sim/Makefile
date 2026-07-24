@@ -26,6 +26,7 @@ lint:
 # 用法: make rand            (默认 SEED=1)
 #       make rand SEED=42 N=200
 #       make fuzz            (循环 SEED=1..COUNT, 首个失败即停)
+#       make p1-regress      (FIFO 定向用例 + 高反压/分支随机 DiffTest)
 SEED  ?= 1
 N     ?= 120
 MR    ?= 0.30
@@ -55,6 +56,35 @@ fuzz:
 	    fi; \
 	done; \
 	echo "==== ALL $(COUNT) SEEDS PASSED ===="
+
+P1_COUNT ?= 20
+P1_N     ?= 300
+P1_CASES  = compact conflicts redirect pressure
+p1-regress:
+	verilator $(RFLAGS) $(SRCS) tb_rand.sv
+	@set -e; \
+	for c in $(P1_CASES); do \
+	    python3 fifo_regress.py --case $$c >/dev/null; \
+	    out=$$(./obj_dir/Vtb_rand); \
+	    if printf '%s\n' "$$out" | grep -q "RAND TEST PASSED"; then \
+	        echo "directed $$c: PASS"; \
+	    else \
+	        echo "directed $$c: FAIL"; printf '%s\n' "$$out"; \
+	        echo "==> 复现: python3 fifo_regress.py --case $$c && ./obj_dir/Vtb_rand"; exit 1; \
+	    fi; \
+	done; \
+	for s in $$(seq 1 $(P1_COUNT)); do \
+	    python3 randgen.py --seed $$s --n $(P1_N) \
+	        --mem-ratio 0.55 --branch-ratio 0.12 2>/dev/null; \
+	    out=$$(./obj_dir/Vtb_rand); \
+	    if printf '%s\n' "$$out" | grep -q "RAND TEST PASSED"; then \
+	        echo "stress seed $$s: PASS"; \
+	    else \
+	        echo "stress seed $$s: FAIL"; printf '%s\n' "$$out"; \
+	        echo "==> 复现: make rand SEED=$$s N=$(P1_N) MR=0.55 BR=0.12"; exit 1; \
+	    fi; \
+	done; \
+	echo "==== FIFO P1 REGRESSION PASSED: $(words $(P1_CASES)) directed + $(P1_COUNT) random ===="
 
 clean:
 	rm -rf obj_dir test.hex golden_trace.hex golden_mem.hex golden.meta
