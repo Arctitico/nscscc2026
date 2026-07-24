@@ -37,6 +37,7 @@ module EX1 (
     output wire   [ 2:0]      data_sram_size,
     output wire   [31:0]      data_sram_addr,
     output wire   [31:0]      data_sram_wdata,
+    output wire   [31:0]      data_sram_pc,
     input  wire               data_addr_ok,
 
     output wire               perf_data_wait,
@@ -122,6 +123,7 @@ assign data_sram_we    = data_sram_en & st_sel ? st_wstrb : 4'b0;
 assign data_sram_size  = (stb_sel | (ldw_sel == 4'b0001)) ? 3'b000 : 3'b010;
 assign data_sram_addr  = mem_addr;
 assign data_sram_wdata = st_wdata;
+assign data_sram_pc    = mem_sel1 ? s1.pc : s0.pc;
 
 wire ex1_ready_go = ~has_mem | data_addr_ok;
 assign EX1_to_EX2_valid = ex1_valid & ex1_ready_go;

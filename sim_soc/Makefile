@@ -62,6 +62,8 @@ PFLAGS = --binary --timing --top-module tb_perf -o Vtb_perf \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
+PREFETCH_PROFILE = dcache_prefetch_profile.sv dcache_pc_trace.sv
+DTRACE ?=
 
 SUPERVISOR_BUILD ?= ../../nscscc-solo-la-soc/sdk/software/examples/supervisor/build
 PERF_KERNEL       = perf_kernel.hex
@@ -93,37 +95,37 @@ perf-images:
 	python3 bin2hex.py $(SUPERVISOR_BUILD)/utility/crypto/crypto.bin $(PERF_CRYPTO_OUT)
 
 perf-build:
-	verilator $(PFLAGS) $(SRCS) tb_perf.sv
+	verilator $(PFLAGS) $(SRCS) tb_perf.sv $(PREFETCH_PROFILE)
 
 perf-simple: perf-images perf-build
 	./obj_dir/Vtb_perf \
 		+kernel_hex=$(PERF_KERNEL) \
 		+expected_hex=$(PERF_KERNEL) +expected_start=0 +expected_words=0 \
-		+entry=1c002000 +max_cycles=1000000
+		+entry=1c002000 +max_cycles=1000000 $(DTRACE)
 
 perf-stream: perf-images perf-build
 	./obj_dir/Vtb_perf \
 		+kernel_hex=$(PERF_KERNEL) +base_extra_hex=$(PERF_STREAM) +base_extra_start=40000 \
 		+expected_hex=$(PERF_STREAM) +expected_start=0 +expected_words=786432 \
-		+entry=1c002008 +max_cycles=50000000
+		+entry=1c002008 +max_cycles=50000000 $(DTRACE)
 
 perf-matrix: perf-images perf-build
 	./obj_dir/Vtb_perf \
 		+kernel_hex=$(PERF_KERNEL) +ext_hex=$(PERF_MATRIX_IN) \
 		+expected_hex=$(PERF_MATRIX_OUT) +expected_start=8000 +expected_words=16384 \
-		+entry=1c002030 +max_cycles=50000000
+		+entry=1c002030 +max_cycles=50000000 $(DTRACE)
 
 perf-mixed: perf-images perf-build
 	./obj_dir/Vtb_perf \
 		+kernel_hex=$(PERF_KERNEL) \
 		+expected_hex=$(PERF_MIXED_OUT) +expected_start=48000 +expected_words=5 \
-		+entry=1c002184 +max_cycles=10000000
+		+entry=1c002184 +max_cycles=10000000 $(DTRACE)
 
 perf-cryptonight: perf-images perf-build
 	./obj_dir/Vtb_perf \
 		+kernel_hex=$(PERF_KERNEL) \
 		+expected_hex=$(PERF_CRYPTO_OUT) +expected_start=0 +expected_words=524288 \
-		+entry=1c0020f0 +max_cycles=100000000
+		+entry=1c0020f0 +max_cycles=100000000 $(DTRACE)
 
 perf-all: perf-simple perf-stream perf-matrix perf-mixed perf-cryptonight
 

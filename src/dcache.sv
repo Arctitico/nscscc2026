@@ -8,6 +8,113 @@
 // - load miss 发起 4 beat 重填。外部 size=3'b100 是本核内部的“16B line”编码。
 // - 指令 miss 只有在 write buffer 排空后才能发出，保证自修改代码可见。
 // ============================================================================
+module dcache_prefetcher (
+    input  wire        clk,
+    input  wire        reset,
+
+    input  wire        train_valid,
+    input  wire [31:0] train_pc,
+    input  wire [31:0] train_addr,
+
+    input  wire [ 1:0] buffer_valid,
+    input  wire [27:0] buffer_line0,
+    input  wire [27:0] buffer_line1,
+    input  wire        refill_busy,
+    input  wire [27:0] refill_line,
+
+    output wire        candidate_valid,
+    output wire [31:0] candidate_addr,
+    input  wire        candidate_take
+);
+
+reg [7:0] pred_valid;
+reg [26:0] pred_pc_tag [0:7];
+reg [27:0] pred_last_line [0:7];
+reg signed [27:0] pred_stride [0:7];
+reg [1:0] pred_conf [0:7];
+
+wire [2:0] pred_idx = train_pc[4:2];
+wire [27:0] train_line = train_addr[31:4];
+wire pred_match = pred_valid[pred_idx] &&
+                  (pred_pc_tag[pred_idx] == train_pc[31:5]);
+wire signed [27:0] observed_stride =
+    $signed(train_line) - $signed(pred_last_line[pred_idx]);
+wire stride_match = observed_stride == pred_stride[pred_idx];
+wire [1:0] next_conf =
+    stride_match ?
+        (pred_conf[pred_idx] == 2'b11 ? 2'b11 :
+                                             pred_conf[pred_idx] + 1'b1) :
+        (pred_conf[pred_idx] == 2'b00 ? 2'b00 :
+                                             pred_conf[pred_idx] - 1'b1);
+wire signed [27:0] next_stride =
+    (!stride_match && pred_conf[pred_idx] == 2'b00) ?
+        observed_stride : pred_stride[pred_idx];
+
+// Stage 1: finish table lookup, stride learning, and confidence update.
+reg               predict_s1_valid;
+reg [27:0]        predict_s1_line;
+reg signed [27:0] predict_s1_stride;
+
+always @(posedge clk) begin
+    if (reset) begin
+        pred_valid <= 8'b0;
+        predict_s1_valid <= 1'b0;
+    end else begin
+        predict_s1_valid <= 1'b0;
+        if (train_valid) begin
+            if (!pred_match) begin
+                pred_valid[pred_idx] <= 1'b1;
+                pred_pc_tag[pred_idx] <= train_pc[31:5];
+                pred_last_line[pred_idx] <= train_line;
+                pred_stride[pred_idx] <= 28'sd0;
+                pred_conf[pred_idx] <= 2'b00;
+            end else begin
+                pred_last_line[pred_idx] <= train_line;
+                pred_stride[pred_idx] <= next_stride;
+                pred_conf[pred_idx] <= next_conf;
+                predict_s1_valid <= next_conf[1] && (next_stride != 0);
+                predict_s1_line <= train_line;
+                predict_s1_stride <= next_stride;
+            end
+        end
+    end
+end
+
+    // Stage 2: add the predicted line, filter duplicates, and hold one
+    // candidate until D-cache accepts it.
+    reg        candidate_valid_r;
+    reg [27:0] candidate_line_r;
+
+    wire [27:0] predicted_line =
+        $unsigned($signed(predict_s1_line) + predict_s1_stride);
+    wire predicted_cacheable = (predicted_line[27:19] == 9'h038);
+    wire predicted_duplicate =
+        (buffer_valid[0] && buffer_line0 == predicted_line) |
+        (buffer_valid[1] && buffer_line1 == predicted_line) |
+        (refill_busy && refill_line == predicted_line) |
+        (candidate_valid_r && candidate_line_r == predicted_line);
+    wire candidate_slot_ready = ~candidate_valid_r | candidate_take;
+    wire candidate_push = predict_s1_valid && predicted_cacheable &&
+                          ~predicted_duplicate && candidate_slot_ready;
+
+always @(posedge clk) begin
+    if (reset) begin
+        candidate_valid_r <= 1'b0;
+    end else begin
+            if (candidate_take)
+                candidate_valid_r <= 1'b0;
+            if (candidate_push) begin
+                candidate_valid_r <= 1'b1;
+                candidate_line_r <= predicted_line;
+            end
+        end
+    end
+
+assign candidate_valid = candidate_valid_r;
+assign candidate_addr = {candidate_line_r, 4'b0};
+
+endmodule
+
 module dcache #(
     parameter integer IDX_BITS  = 7,
     parameter integer WORD_BITS = 2
@@ -20,6 +127,7 @@ module dcache #(
     input  wire [ 2:0] cpu_size,
     input  wire [31:0] cpu_addr,
     input  wire [31:0] cpu_wdata,
+    input  wire [31:0] cpu_pc,
     output wire        cpu_addr_ok,
     output wire [31:0] cpu_rdata,
     output wire        cpu_data_ok,
@@ -55,6 +163,7 @@ localparam [2:0] S_WAIT_WB  = 3'd2;
 localparam [2:0] S_REFILL   = 3'd3;
 localparam [2:0] S_RELOOKUP = 3'd4;
 localparam [2:0] S_UNCACHED = 3'd5;
+localparam [2:0] S_WAIT_PF  = 3'd6;
 
 reg [2:0] state;
 
@@ -62,6 +171,8 @@ reg [31:0] req_addr;
 reg [ 3:0] req_we;
 reg [ 2:0] req_size;
 reg [31:0] req_wdata;
+reg [31:0] req_pc;
+reg        req_trained;
 
 wire req_store = |req_we;
 wire req_cacheable = (req_addr[31:23] == 9'h038);
@@ -88,12 +199,36 @@ reg v0_q, v1_q, lru_q;
 wire hit0 = v0_q & (tag0_q == req_tag);
 wire hit1 = v1_q & (tag1_q == req_tag);
 wire hit  = hit0 | hit1;
-wire [31:0] hit_data = hit0 ? data0_q : data1_q;
+
+// ------------------------------ stream prefetch buffer -------------------
+// Prefetch data stays outside the single-port cache BRAM, allowing normal
+// cache hits while a speculative SRAM burst is in flight.
+reg [1:0]  pf_valid;
+reg [1:0]  pf_used;
+reg [27:0] pf_line [0:1];
+reg [31:0] pf_data [0:1][0:3];
+reg        pf_busy;
+reg        pf_slot;
+reg        pf_rr;
+reg [1:0]  pf_count;
+reg [31:0] pf_active_addr;
+reg        pf_poison;
+
+wire pf_hit0 = pf_valid[0] && (pf_line[0] == req_addr[31:4]);
+wire pf_hit1 = pf_valid[1] && (pf_line[1] == req_addr[31:4]);
+wire pf_hit = pf_hit0 | pf_hit1;
+wire pf_hit_slot = pf_hit1;
+wire [31:0] pf_hit_data = pf_hit0 ? pf_data[0][req_word]
+                                  : pf_data[1][req_word];
+wire effective_hit = hit | pf_hit;
+wire [31:0] hit_data = pf_hit ? pf_hit_data :
+                         (hit0 ? data0_q : data1_q);
 
 // 请求在 IDLE 被接受；连续 load hit 时，当前响应与下一个
 // 地址接受可同拍发生。store hit 需要占用单口 data RAM 写口，
 // 所以不在该拍继续接收。
-wire cache_load_hit = (state == S_LOOKUP) & req_cacheable & ~req_store & hit;
+wire cache_load_hit = (state == S_LOOKUP) & req_cacheable &
+                      ~req_store & effective_hit;
 assign cpu_addr_ok = (state == S_IDLE) | cache_load_hit;
 wire cpu_accept = cpu_req & cpu_addr_ok;
 
@@ -158,7 +293,8 @@ assign cpu_rdata   = uncached_done    ? mem_rdata :
                      refill_critical  ? mem_rdata : hit_data;
 
 assign perf_hit      = cache_load_hit;
-assign perf_miss     = (state == S_LOOKUP) & req_cacheable & ~req_store & ~hit;
+assign perf_miss     = (state == S_LOOKUP) & req_cacheable &
+                       ~req_store & ~effective_hit;
 assign perf_wb_stall = (state == S_LOOKUP) & req_cacheable & req_store &
                        ~wb_enq_ready;
 
@@ -168,10 +304,14 @@ assign inst_safe = wb_empty & ~(cpu_req & (|cpu_we));
 // ------------------------------ memory ports ------------------------------
 wire refill_req      = (state == S_REFILL);
 wire uncached_load   = (state == S_UNCACHED) & ~req_store;
+wire demand_mem_rd_req = refill_req | uncached_load;
 
-assign mem_rd_req  = refill_req | uncached_load;
-assign mem_rd_size = refill_req ? 3'b100 : req_size;
-assign mem_rd_addr = refill_req ? {req_addr[31:OFF], {OFF{1'b0}}} : req_addr;
+assign mem_rd_req  = demand_mem_rd_req | pf_busy;
+assign mem_rd_size = demand_mem_rd_req ?
+                     (refill_req ? 3'b100 : req_size) : 3'b100;
+assign mem_rd_addr = demand_mem_rd_req ?
+                     (refill_req ? {req_addr[31:OFF], {OFF{1'b0}}} : req_addr) :
+                     pf_active_addr;
 
 assign mem_wr_req  = uncached_store | wb_mem_req;
 assign mem_wr_size = uncached_store ? req_size  : wb_mem_size;
@@ -190,16 +330,23 @@ always @(posedge clk) begin
                 state <= S_LOOKUP;
         S_LOOKUP:
             if (!req_cacheable)
-                state <= wb_empty ? S_UNCACHED : S_WAIT_WB;
+                state <= wb_empty ? (pf_busy ? S_WAIT_PF : S_UNCACHED)
+                                  : S_WAIT_WB;
             else if (req_store)
                 state <= wb_enq_ready ? S_IDLE : S_LOOKUP;
-            else if (hit)
+            else if (effective_hit)
                 state <= cpu_accept ? S_LOOKUP : S_IDLE;
+            else if (pf_busy)
+                state <= S_WAIT_PF;
             else
                 state <= wb_line_conflict ? S_WAIT_WB : S_REFILL;
         S_WAIT_WB:
             if (req_cacheable ? ~wb_line_conflict : wb_empty)
-                state <= req_cacheable ? S_REFILL : S_UNCACHED;
+                state <= pf_busy ? S_WAIT_PF :
+                         (req_cacheable ? S_REFILL : S_UNCACHED);
+        S_WAIT_PF:
+            if (!pf_busy)
+                state <= S_LOOKUP;
         S_REFILL:
             if (refill_last)
                 // critical word 必然已在 4 beat 中返回，不再 relookup
@@ -222,6 +369,110 @@ always @(posedge clk) begin
         req_we    <= cpu_we;
         req_size  <= cpu_size;
         req_wdata <= cpu_wdata;
+        req_pc    <= cpu_pc;
+    end
+end
+
+// ------------------------------ per-PC stride prefetcher -----------------
+wire train_demand_miss = (state == S_LOOKUP) & req_cacheable &
+                         ~req_store & ~effective_hit;
+wire train_prefetch_hit = cache_load_hit & pf_hit &
+                          ~pf_used[pf_hit_slot];
+wire predictor_train = ~req_trained &&
+                       (train_demand_miss | train_prefetch_hit);
+wire pf_candidate_valid;
+wire [31:0] pf_candidate_addr;
+
+wire pf_start_window = (state == S_IDLE) | cache_load_hit;
+wire pf_start = pf_candidate_valid && ~pf_busy &&
+                wb_empty && pf_start_window &&
+                ~(cpu_req && (|cpu_we)) &&
+                ~(cpu_req && (cpu_addr[31:23] != 9'h038));
+wire pf_refill_fire = pf_busy && mem_rd_ok;
+wire pf_refill_last = pf_refill_fire & (pf_count == 2'b11);
+wire pf_store_conflict = cache_store_finish &&
+                         (req_addr[31:4] == pf_active_addr[31:4]);
+
+dcache_prefetcher u_prefetcher (
+    .clk            (clk),
+    .reset          (reset),
+    .train_valid    (predictor_train),
+    .train_pc       (req_pc),
+    .train_addr     (req_addr),
+    .buffer_valid   (pf_valid),
+    .buffer_line0   (pf_line[0]),
+    .buffer_line1   (pf_line[1]),
+    .refill_busy    (pf_busy),
+    .refill_line    (pf_active_addr[31:4]),
+    .candidate_valid(pf_candidate_valid),
+    .candidate_addr (pf_candidate_addr),
+    .candidate_take (pf_start)
+);
+
+always @(posedge clk) begin
+    if (reset) begin
+        req_trained <= 1'b0;
+    end else if (cpu_accept) begin
+        req_trained <= 1'b0;
+    end else if (predictor_train) begin
+        req_trained <= 1'b1;
+    end
+end
+
+always @(posedge clk) begin
+    if (reset) begin
+        pf_valid <= 2'b0;
+        pf_used <= 2'b0;
+        pf_busy <= 1'b0;
+        pf_slot <= 1'b0;
+        pf_rr <= 1'b0;
+        pf_count <= 2'b0;
+        pf_poison <= 1'b0;
+    end else begin
+        if (cache_store_finish) begin
+            if (pf_valid[0] && (pf_line[0] == req_addr[31:4]))
+                pf_valid[0] <= 1'b0;
+            if (pf_valid[1] && (pf_line[1] == req_addr[31:4]))
+                pf_valid[1] <= 1'b0;
+        end
+
+        if (train_prefetch_hit)
+            pf_used[pf_hit_slot] <= 1'b1;
+
+        if (pf_start) begin
+            pf_busy <= 1'b1;
+            pf_count <= 2'b0;
+            pf_active_addr <= pf_candidate_addr;
+            pf_poison <= 1'b0;
+            if (!pf_valid[0]) begin
+                pf_slot <= 1'b0;
+                pf_valid[0] <= 1'b0;
+            end else if (!pf_valid[1]) begin
+                pf_slot <= 1'b1;
+                pf_valid[1] <= 1'b0;
+            end else begin
+                pf_slot <= pf_rr;
+                pf_valid[pf_rr] <= 1'b0;
+                pf_rr <= ~pf_rr;
+            end
+        end
+
+        if (pf_busy && pf_store_conflict)
+            pf_poison <= 1'b1;
+
+        if (pf_refill_fire) begin
+            pf_data[pf_slot][pf_count] <= mem_rdata;
+            if (pf_refill_last) begin
+                pf_busy <= 1'b0;
+                if (!(pf_poison | pf_store_conflict)) begin
+                    pf_line[pf_slot] <= pf_active_addr[31:4];
+                    pf_valid[pf_slot] <= 1'b1;
+                    pf_used[pf_slot] <= 1'b0;
+                end
+            end else begin
+                pf_count <= pf_count + 1'b1;
+            end
+        end
     end
 end
 

@@ -214,6 +214,34 @@ module tb_perf;
     reg [63:0] ext_write_active_cycles;
     reg        prev_push_valid;
     reg [31:0] prev_push_addr;
+    reg [63:0] ic_miss_count;
+    reg [63:0] ic_miss_next;
+    reg [63:0] ic_miss_same;
+    reg [63:0] ic_miss_other;
+    reg [63:0] ic_miss_from_seq;
+    reg [63:0] ic_miss_from_pred;
+    reg [63:0] ic_miss_from_other;
+    reg [63:0] if_seq_cross;
+    reg [63:0] if_pred_cross;
+    reg [63:0] postfill_next;
+    reg [63:0] postfill_next_lt8;
+    reg [63:0] postfill_next_ge8;
+    reg [63:0] inst_wait_cycles;
+    reg [63:0] inst_wait_data_cycles;
+    reg [63:0] base_idle_cycles;
+    reg [63:0] base_inst_cycles;
+    reg [63:0] base_data_read_cycles;
+    reg [63:0] base_data_write_cycles;
+    reg        prev_miss_valid;
+    reg [31:0] prev_miss_line;
+    reg        prev_if_expected_valid;
+    reg        prev_if_expected_pred;
+    reg [31:0] prev_if_expected_line;
+    reg [ 1:0] accepted_if_origin;
+    reg [31:0] active_fill_line;
+    reg        last_fill_valid;
+    reg [31:0] last_fill_line;
+    reg [63:0] last_fill_cycle;
 
     wire wb_push = u_cpu.u_dcache.u_write_buffer.push;
     wire wb_pop  = u_cpu.u_dcache.u_write_buffer.pop;
@@ -222,6 +250,15 @@ module tb_perf;
                         (u_bridge.u_uart.tx_data == 8'h06);
     wire marker_end = u_bridge.u_uart.tx_start &
                       (u_bridge.u_uart.tx_data == 8'h07);
+    wire ic_miss_event = u_cpu.perf_icache_miss_event;
+    wire [31:0] ic_miss_line = {u_cpu.u_icache.inst_rd_addr[31:4], 4'b0};
+    wire if_f1_fire = u_cpu.u_IF.f1_fire;
+    wire if_selected_pred = u_cpu.bp_taken0 |
+                            (u_cpu.u_IF.want_s1 & u_cpu.bp_taken1);
+    wire [31:0] if_next_pc = u_cpu.u_IF.next_pc;
+    localparam [1:0] IF_ORIGIN_OTHER = 2'd0;
+    localparam [1:0] IF_ORIGIN_SEQ   = 2'd1;
+    localparam [1:0] IF_ORIGIN_PRED  = 2'd2;
 
     always @(posedge clk) begin
         if (reset) begin
@@ -243,6 +280,10 @@ module tb_perf;
             ext_write_active_cycles <= 64'b0;
             prev_push_valid        <= 1'b0;
             prev_push_addr         <= 32'b0;
+            prev_miss_valid        <= 1'b0;
+            prev_if_expected_valid <= 1'b0;
+            accepted_if_origin     <= IF_ORIGIN_OTHER;
+            last_fill_valid        <= 1'b0;
         end else if (marker_start) begin
             counting               <= 1'b1;
             start_cycle            <= u_cpu.perf_cycle;
@@ -258,6 +299,28 @@ module tb_perf;
             data_wr_done_count     <= 64'b0;
             ext_write_active_cycles <= 64'b0;
             prev_push_valid        <= 1'b0;
+            ic_miss_count          <= 64'b0;
+            ic_miss_next           <= 64'b0;
+            ic_miss_same           <= 64'b0;
+            ic_miss_other          <= 64'b0;
+            ic_miss_from_seq       <= 64'b0;
+            ic_miss_from_pred      <= 64'b0;
+            ic_miss_from_other     <= 64'b0;
+            if_seq_cross           <= 64'b0;
+            if_pred_cross          <= 64'b0;
+            postfill_next          <= 64'b0;
+            postfill_next_lt8      <= 64'b0;
+            postfill_next_ge8      <= 64'b0;
+            inst_wait_cycles      <= 64'b0;
+            inst_wait_data_cycles <= 64'b0;
+            base_idle_cycles      <= 64'b0;
+            base_inst_cycles      <= 64'b0;
+            base_data_read_cycles <= 64'b0;
+            base_data_write_cycles <= 64'b0;
+            prev_miss_valid        <= 1'b0;
+            prev_if_expected_valid <= 1'b0;
+            accepted_if_origin     <= IF_ORIGIN_OTHER;
+            last_fill_valid        <= 1'b0;
         end else if (marker_end & counting) begin
             counting       <= 1'b0;
             finished       <= 1'b1;
@@ -288,6 +351,76 @@ module tb_perf;
                 data_wr_done_count <= data_wr_done_count + 64'd1;
             if ((u_bridge.u_ext.state != 1'b0) & u_bridge.u_ext.write_r)
                 ext_write_active_cycles <= ext_write_active_cycles + 64'd1;
+
+            if (!u_bridge.base_busy)
+                base_idle_cycles <= base_idle_cycles + 64'd1;
+            else if (!u_bridge.u_base.tag_out)
+                base_inst_cycles <= base_inst_cycles + 64'd1;
+            else if (u_bridge.u_base.write_r)
+                base_data_write_cycles <= base_data_write_cycles + 64'd1;
+            else
+                base_data_read_cycles <= base_data_read_cycles + 64'd1;
+
+            if (inst_rd_req & inst_rd_rdy)
+                active_fill_line <= inst_rd_addr;
+            if (inst_rd_req & ~inst_rd_rdy) begin
+                inst_wait_cycles <= inst_wait_cycles + 64'd1;
+                if (u_bridge.base_pick_data)
+                    inst_wait_data_cycles <= inst_wait_data_cycles + 64'd1;
+            end
+            if (inst_ret_valid & inst_ret_last) begin
+                last_fill_valid <= 1'b1;
+                last_fill_line  <= active_fill_line;
+                last_fill_cycle <= u_cpu.perf_cycle;
+            end
+
+            if (if_f1_fire) begin
+                if (prev_if_expected_valid &&
+                    ({u_cpu.bp_pc0[31:4], 4'b0} == prev_if_expected_line))
+                    accepted_if_origin <= prev_if_expected_pred ?
+                                          IF_ORIGIN_PRED : IF_ORIGIN_SEQ;
+                else
+                    accepted_if_origin <= IF_ORIGIN_OTHER;
+                if (if_next_pc[31:4] != u_cpu.bp_pc0[31:4]) begin
+                    if (if_selected_pred)
+                        if_pred_cross <= if_pred_cross + 64'd1;
+                    else
+                        if_seq_cross <= if_seq_cross + 64'd1;
+                end
+                prev_if_expected_valid <= 1'b1;
+                prev_if_expected_pred  <= if_selected_pred;
+                prev_if_expected_line  <= {if_next_pc[31:4], 4'b0};
+            end
+
+            if (ic_miss_event) begin
+                ic_miss_count <= ic_miss_count + 64'd1;
+                case (accepted_if_origin)
+                IF_ORIGIN_SEQ:
+                    ic_miss_from_seq <= ic_miss_from_seq + 64'd1;
+                IF_ORIGIN_PRED:
+                    ic_miss_from_pred <= ic_miss_from_pred + 64'd1;
+                default:
+                    ic_miss_from_other <= ic_miss_from_other + 64'd1;
+                endcase
+                if (prev_miss_valid) begin
+                    if (ic_miss_line == prev_miss_line + 32'd16)
+                        ic_miss_next <= ic_miss_next + 64'd1;
+                    else if (ic_miss_line == prev_miss_line)
+                        ic_miss_same <= ic_miss_same + 64'd1;
+                    else
+                        ic_miss_other <= ic_miss_other + 64'd1;
+                end
+                if (last_fill_valid &&
+                    (ic_miss_line == last_fill_line + 32'd16)) begin
+                    postfill_next <= postfill_next + 64'd1;
+                    if ((u_cpu.perf_cycle - last_fill_cycle) < 64'd8)
+                        postfill_next_lt8 <= postfill_next_lt8 + 64'd1;
+                    else
+                        postfill_next_ge8 <= postfill_next_ge8 + 64'd1;
+                end
+                prev_miss_valid <= 1'b1;
+                prev_miss_line  <= ic_miss_line;
+            end
         end
     end
 
@@ -374,6 +507,17 @@ module tb_perf;
                  occ0_cycles, occ1_cycles, occ2_cycles);
         $display("[DIRECT PERF] wr_req_cycles=%0d wr_done=%0d ext_write_active=%0d",
                  data_wr_req_cycles, data_wr_done_count, ext_write_active_cycles);
+        $display("[PREFETCH] miss=%0d next=%0d same=%0d other=%0d",
+                 ic_miss_count, ic_miss_next, ic_miss_same, ic_miss_other);
+        $display("[PREFETCH] miss_origin seq=%0d pred=%0d other=%0d cross seq=%0d pred=%0d",
+                 ic_miss_from_seq, ic_miss_from_pred, ic_miss_from_other,
+                 if_seq_cross, if_pred_cross);
+        $display("[PREFETCH] postfill_next=%0d lt8=%0d ge8=%0d inst_wait=%0d wait_data=%0d",
+                 postfill_next, postfill_next_lt8, postfill_next_ge8,
+                 inst_wait_cycles, inst_wait_data_cycles);
+        $display("[PREFETCH] base idle=%0d inst=%0d data_read=%0d data_write=%0d",
+                 base_idle_cycles, base_inst_cycles,
+                 base_data_read_cycles, base_data_write_cycles);
         if (mismatches != 0)
             $fatal(1, "DIRECT PERF FAILED: %0d result mismatches", mismatches);
         $display("==== DIRECT PERF PASSED ====");
