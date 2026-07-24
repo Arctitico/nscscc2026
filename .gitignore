@@ -6,8 +6,6 @@ obj_dir/
 /sim_soc/*.hex
 /sim_soc/*.meta
 
-soc/README.md
-
 *.vcd
 *.fst
 *.fst.hier

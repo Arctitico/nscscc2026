@@ -2,6 +2,8 @@
 
 当前分支 `inorder-dual-issue` 是九级顺序双发主开发线。CPU、板级 SoC、引脚约束和 Vivado 构建流程都由本仓管理；最终实现使用 CPU 私有类 SRAM 口直连 BaseRAM、ExtRAM 和 UART，不再经过 AXI 或官方参考 SoC。
 
+当前网站签核基线为 90 MHz、SRAM `20 ns / 20 ns / 1 拍`：Level1/Level3 和四项性能测试全部 100 分，MATRIX/STREAM/CryptoNight/MIXED 为 `96/63/407/4 ms`。位流、STA 与哈希见下文；新开发任务以 `../../docs/inorder_dual_issue/todo.md` 为准。
+
 ## 目录
 
 - `src/`：CPU 主源码，包含九级顺序双发、I-cache、D-cache 和 write buffer。
@@ -49,9 +51,9 @@
 
 这会生成 `2/2/1` 拍，实际约 `22.22/22.22/11.11 ns`。构建结果还会把请求值、换算拍数和实际纳秒数写入 `build_summary.txt`，并归档 bit、SHA-256、clock/check_timing、setup/hold 和资源报告。工程位于 `fpga/project/`，结果位于 `output/`；两者均不提交 Git。
 
-首个直连候选 `output/fpga_50mhz_20260724_121743/` 网站实测无法启动 monitor。修复后的 50 MHz 候选位于 `output/fpga_50mhz_20260724_123734/`：WNS `+1.808 ns`、TNS `0`、WHS `+0.037 ns`，0 个 setup 失败端点、no-clock pin 和 unconstrained internal endpoint；资源为 8175 LUT、4209 Register、6 RAMB18、3 DSP。该候选已完成网站六项签核：Level1/Level3 通过，MATRIX/STREAM/CryptoNight/MIXED 为 `200/130/922/9 ms`，全部 100 分。
+当前网站签核基线为 `output/fpga_90mhz_20_20_1_board_20260724/`：目标/PLL 实际频率 `90 MHz`，SRAM 为 `2/2/1` 拍，WNS `+0.194 ns`、TNS `0`、WHS `+0.055 ns`，0 个 setup 失败端点、no-clock pin 和 unconstrained internal endpoint。网站 Level1/Level3 通过，MATRIX/STREAM/CryptoNight/MIXED 分别为 `96/63/407/4 ms`，六项全部 100 分，详见 `../submit/inorder_dual_issue/10.md`。92.5 MHz 虽以 WNS/WHS `+0.010/+0.010 ns` 勉强通过，95 MHz 已失败，因此当前 STA 边界在 `92.5–95 MHz`。
 
-当前网站签核基线为 `output/fpga_90mhz_20_20_1_board_20260724/`：目标/PLL 实际频率 `90 MHz`，SRAM 为 `2/2/1` 拍，WNS `+0.194 ns`、TNS `0`、WHS `+0.055 ns`，0 个 setup 失败端点、no-clock pin 和 unconstrained internal endpoint。网站 Level1/Level3 通过，MATRIX/STREAM/CryptoNight/MIXED 分别为 `96/63/407/4 ms`，六项全部 100 分，详见 `submit/inorder_dual_issue/10.md`。92.5 MHz 虽以 WNS/WHS `+0.010/+0.010 ns` 勉强通过，95 MHz 已失败，因此当前 STA 边界在 `92.5–95 MHz`。
+历史候选、故障定位和 50 MHz A/B 数据不在本 README 展开，统一查阅 `../../docs/inorder_dual_issue/备忘录.md` 与 `../submit/inorder_dual_issue/README.md`。
 
 ## 本仓回归
 
