@@ -58,6 +58,18 @@ UFLAGS = --binary --timing --top-module tb_uart -o Vtb_uart \
 TFLAGS = --binary --timing --top-module tb_sram_ctrl -o Vtb_sram_ctrl \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
+PFLAGS = --binary --timing --top-module tb_perf -o Vtb_perf \
+         -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
+         -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
+         -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
+
+SUPERVISOR_BUILD ?= ../../nscscc-solo-la-soc/sdk/software/examples/supervisor/build
+PERF_KERNEL       = perf_kernel.hex
+PERF_STREAM       = perf_stream.hex
+PERF_MATRIX_IN    = perf_matrix_input.hex
+PERF_MATRIX_OUT   = perf_matrix_expected.hex
+PERF_MIXED_OUT    = perf_mixed_expected.hex
+PERF_CRYPTO_OUT   = perf_crypto_expected.hex
 
 rand:
 	python3 ../sim/randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
@@ -70,6 +82,50 @@ supervisor:
 	python3 bin2hex.py $(KERNEL_BIN) kernel.hex
 	verilator $(SFLAGS) $(SRCS) tb_supervisor.sv
 	./obj_dir/Vtb_supervisor
+
+# ---- 正式直连 90 MHz 2/2/1 SRAM workload 性能画像 ----
+perf-images:
+	python3 bin2hex.py $(SUPERVISOR_BUILD)/kernel/auto/kernel.bin $(PERF_KERNEL)
+	python3 bin2hex.py $(SUPERVISOR_BUILD)/utility/stream/stream_input.bin $(PERF_STREAM)
+	python3 bin2hex.py $(SUPERVISOR_BUILD)/utility/matrix/matrix_input.bin $(PERF_MATRIX_IN)
+	python3 bin2hex.py $(SUPERVISOR_BUILD)/utility/matrix/matrix_expected.bin $(PERF_MATRIX_OUT)
+	python3 bin2hex.py $(SUPERVISOR_BUILD)/utility/mixed/mixed_signature.bin $(PERF_MIXED_OUT)
+	python3 bin2hex.py $(SUPERVISOR_BUILD)/utility/crypto/crypto.bin $(PERF_CRYPTO_OUT)
+
+perf-build:
+	verilator $(PFLAGS) $(SRCS) tb_perf.sv
+
+perf-simple: perf-images perf-build
+	./obj_dir/Vtb_perf \
+		+kernel_hex=$(PERF_KERNEL) \
+		+expected_hex=$(PERF_KERNEL) +expected_start=0 +expected_words=0 \
+		+entry=1c002000 +max_cycles=1000000
+
+perf-stream: perf-images perf-build
+	./obj_dir/Vtb_perf \
+		+kernel_hex=$(PERF_KERNEL) +base_extra_hex=$(PERF_STREAM) +base_extra_start=40000 \
+		+expected_hex=$(PERF_STREAM) +expected_start=0 +expected_words=786432 \
+		+entry=1c002008 +max_cycles=50000000
+
+perf-matrix: perf-images perf-build
+	./obj_dir/Vtb_perf \
+		+kernel_hex=$(PERF_KERNEL) +ext_hex=$(PERF_MATRIX_IN) \
+		+expected_hex=$(PERF_MATRIX_OUT) +expected_start=8000 +expected_words=16384 \
+		+entry=1c002030 +max_cycles=50000000
+
+perf-mixed: perf-images perf-build
+	./obj_dir/Vtb_perf \
+		+kernel_hex=$(PERF_KERNEL) \
+		+expected_hex=$(PERF_MIXED_OUT) +expected_start=48000 +expected_words=5 \
+		+entry=1c002184 +max_cycles=10000000
+
+perf-cryptonight: perf-images perf-build
+	./obj_dir/Vtb_perf \
+		+kernel_hex=$(PERF_KERNEL) \
+		+expected_hex=$(PERF_CRYPTO_OUT) +expected_start=0 +expected_words=524288 \
+		+entry=1c0020f0 +max_cycles=100000000
+
+perf-all: perf-simple perf-stream perf-matrix perf-mixed perf-cryptonight
 
 level1:
 	python3 level1.py
