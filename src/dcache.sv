@@ -214,12 +214,25 @@ reg [1:0]  pf_count;
 reg [31:0] pf_active_addr;
 reg        pf_poison;
 
-wire pf_hit0 = pf_valid[0] && (pf_line[0] == req_addr[31:4]);
-wire pf_hit1 = pf_valid[1] && (pf_line[1] == req_addr[31:4]);
+// Stream-buffer lookup is performed from the incoming request and registered
+// on the same edge as req_addr.  The old organization compared registered
+// req_addr in S_LOOKUP and then drove both data_ok/ready and the complete
+// EX2->RF forwarding mux in one cycle.  At high frequency that made pf_line
+// fan out through the whole completion/backpressure chain.
+//
+// This retiming does not add a demand-hit cycle: a request is still accepted
+// in cycle N and answered in S_LOOKUP in cycle N+1.  It only moves the
+// stream-buffer tag/data selection into the existing request-capture boundary.
+reg        pf_hit0_q;
+reg        pf_hit1_q;
+reg        pf_hit_unused_q;
+reg [31:0] pf_hit_data_q;
+
+wire pf_hit0 = pf_hit0_q;
+wire pf_hit1 = pf_hit1_q;
 wire pf_hit = pf_hit0 | pf_hit1;
 wire pf_hit_slot = pf_hit1;
-wire [31:0] pf_hit_data = pf_hit0 ? pf_data[0][req_word]
-                                  : pf_data[1][req_word];
+wire [31:0] pf_hit_data = pf_hit_data_q;
 wire effective_hit = hit | pf_hit;
 wire [31:0] hit_data = pf_hit ? pf_hit_data :
                          (hit0 ? data0_q : data1_q);
@@ -231,6 +244,10 @@ wire cache_load_hit = (state == S_LOOKUP) & req_cacheable &
                       ~req_store & effective_hit;
 assign cpu_addr_ok = (state == S_IDLE) | cache_load_hit;
 wire cpu_accept = cpu_req & cpu_addr_ok;
+wire incoming_pf_hit0 = pf_valid[0] &&
+                        (pf_line[0] == cpu_addr[31:4]);
+wire incoming_pf_hit1 = pf_valid[1] &&
+                        (pf_line[1] == cpu_addr[31:4]);
 
 // 接受请求的时钟沿同步读出 tag/data，LOOKUP 拍完成比较。
 wire use_input = cpu_accept;
@@ -373,11 +390,27 @@ always @(posedge clk) begin
     end
 end
 
+always @(posedge clk) begin
+    if (reset) begin
+        pf_hit0_q       <= 1'b0;
+        pf_hit1_q       <= 1'b0;
+        pf_hit_unused_q <= 1'b0;
+        pf_hit_data_q   <= 32'b0;
+    end else if (cpu_accept) begin
+        pf_hit0_q       <= incoming_pf_hit0;
+        pf_hit1_q       <= incoming_pf_hit1;
+        pf_hit_unused_q <= incoming_pf_hit0 ? ~pf_used[0] :
+                           incoming_pf_hit1 ? ~pf_used[1] : 1'b0;
+        pf_hit_data_q   <= incoming_pf_hit0 ? pf_data[0][in_word] :
+                           incoming_pf_hit1 ? pf_data[1][in_word] : 32'b0;
+    end
+end
+
 // ------------------------------ per-PC stride prefetcher -----------------
 wire train_demand_miss = (state == S_LOOKUP) & req_cacheable &
                          ~req_store & ~effective_hit;
 wire train_prefetch_hit = cache_load_hit & pf_hit &
-                          ~pf_used[pf_hit_slot];
+                          pf_hit_unused_q;
 wire predictor_train = ~req_trained &&
                        (train_demand_miss | train_prefetch_hit);
 wire pf_candidate_valid;

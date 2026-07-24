@@ -24,13 +24,13 @@ module sram_ctrl #(
     input  wire        reset,
 
     // SRAM 物理侧（三态在顶层）
-    output reg  [19:0] ram_addr,
-    output reg  [ 3:0] ram_be_n,
-    output reg         ram_ce_n,
-    output reg         ram_oe_n,
-    output reg         ram_we_n,
-    output reg         ram_wdrive,
-    output reg  [31:0] ram_wdat,
+    (* IOB = "TRUE" *) output reg  [19:0] ram_addr,
+    (* IOB = "TRUE" *) output reg  [ 3:0] ram_be_n,
+    (* IOB = "TRUE" *) output reg         ram_ce_n,
+    (* IOB = "TRUE" *) output reg         ram_oe_n,
+    (* IOB = "TRUE" *) output reg         ram_we_n,
+    (* IOB = "TRUE" *) output reg         ram_wdrive,
+    (* IOB = "TRUE" *) output reg  [31:0] ram_wdat,
     input  wire [31:0] ram_rdat,
 
     // 请求侧（单口；req 保持到首个 ok / 突发到 beat_last）
@@ -57,13 +57,37 @@ reg  [2:0] widx;       // 当前 beat 序号
 reg  [2:0] len_r;      // 本次突发字数-1
 reg [15:0] write_hold_count; // WE# 上升后的数据保持剩余拍数
 reg        write_r;    // 当前访问类型，供物理引脚寄存器在结束拍判断
+reg        ok_q;
 
 // 保持窗口的最后一拍可以提前向上游给 ready；真正接收发生在该拍末沿，
 // 此时地址/数据已经完整保持 WRITE_HOLD_CYCLES 拍，不引入额外空泡。
 assign busy      = (state != S_IDLE) || (write_hold_count > 16'd1);
-assign ok        = (state == S_ACC) && (cnt == 16'd0);  // 每字访问末拍
+wire accept_req = (state == S_IDLE) && req &&
+                  (write_hold_count <= 16'd1);
+
+// 原组合 ok=(state==S_ACC && cnt==0) 会从控制器计数器一直穿过
+// mem_bridge、cache、EX2 completion 和整条 ready 链。这里在前一拍根据
+// 当前状态预测“下一拍是否为访问末拍”，登记出的 ok_q 与原 ok 在同一
+// 协议周期有效，因此切断返回控制路径而不增加 SRAM 访问拍数。
+wire accept_one_cycle = accept_req &&
+                        ((|wstrb) ? (WRITE_COUNT_INIT == 16'd0)
+                                  : (READ_COUNT_INIT  == 16'd0));
+wire advance_to_last_cycle = (state == S_ACC) && (cnt == 16'd1);
+wire next_burst_one_cycle = (state == S_ACC) && (cnt == 16'd0) &&
+                            (widx != len_r) &&
+                            (READ_COUNT_INIT == 16'd0);
+
+assign ok        = ok_q;
 assign beat_last = ok && (widx == len_r);
 assign rdata     = ram_rdat;                            // 读：末拍数据已稳定，组合直通
+
+always @(posedge clk) begin
+    if (reset)
+        ok_q <= 1'b0;
+    else
+        ok_q <= accept_one_cycle | advance_to_last_cycle |
+                next_burst_one_cycle;
+end
 
 // 协议状态只使用同步复位。不要让这些寄存器带异步复位：它们会经过
 // mem_bridge 影响 CPU cache RAM 的地址/控制输入，异步控制会触发
@@ -81,7 +105,7 @@ always @(posedge clk) begin
         S_IDLE: begin
             // write_hold_count==1 表示当前正处在保持窗口的最后一拍；本沿接收
             // 新请求只会在完整保持结束之后更新地址/数据，因而可无缝衔接。
-            if (req && (write_hold_count <= 16'd1)) begin
+            if (accept_req) begin
                 tag_out  <= tag_in;
                 cnt      <= (|wstrb) ? WRITE_COUNT_INIT : READ_COUNT_INIT;
                 widx     <= 3'b0;
@@ -125,7 +149,7 @@ always @(posedge clk or posedge reset) begin
             ram_ce_n <= 1'b1;
             ram_oe_n <= 1'b1;
             ram_we_n <= 1'b1;
-            if (req && (write_hold_count <= 16'd1)) begin
+            if (accept_req) begin
                 ram_addr   <= addr;
                 ram_wdat   <= wdata;
                 ram_be_n   <= (|wstrb) ? ~wstrb : 4'h0;
