@@ -51,6 +51,11 @@ always @(posedge clk) begin
             txd       <= shift[0];
             shift     <= {1'b0, shift[7:1]};
             bit_index <= bit_index + 1'b1;
+        end else if (bit_index == 4'd8) begin
+            // 停止位也属于 busy 窗口。若此处提前清 busy，软件会在几十 ns
+            // 后写入下一字节，截断本应持续一个完整 baud 周期的停止位。
+            txd       <= 1'b1;
+            bit_index <= 4'd9;
         end else begin
             txd    <= 1'b1;
             active <= 1'b0;

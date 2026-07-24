@@ -2,6 +2,7 @@
 # 验证多周期访存停顿 / 地址译码 / 同片「访存优先」仲裁。用法：
 #   make        生成 test.hex（复用 ../sim/asm.py）、编译、运行自检
 #   make lint   仅 lint 板级顶层
+#   make uart   连续两字节 UART 物理帧/停止位自检
 #   make supervisor  启动当前 2026 auto kernel 并核对 UART 欢迎字符串
 #   make level1      运行 52 字节/64 项 Fibonacci 第一阶段测试
 #   make clean
@@ -50,6 +51,9 @@ LFLAGS = --binary --timing --top-module tb_level1 -o Vtb_level1 \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
+UFLAGS = --binary --timing --top-module tb_uart -o Vtb_uart \
+         -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
+         -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
 
 rand:
 	python3 ../sim/randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
@@ -67,6 +71,10 @@ level1:
 	python3 level1.py
 	verilator $(LFLAGS) $(SRCS) tb_level1.sv
 	./obj_dir/Vtb_level1
+
+uart:
+	verilator $(UFLAGS) $(SOC_DIR)/uart_phy.sv tb_uart.sv
+	./obj_dir/Vtb_uart
 
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv

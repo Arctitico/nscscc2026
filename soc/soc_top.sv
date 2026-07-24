@@ -69,15 +69,17 @@ end else begin : g_board_clock
 end
 endgenerate
 
-// 同步释放复位；PLL 未锁定或外部 reset 有效时保持 CPU 复位。
+// 异步置位、同步释放复位。reset_pipe 的 INIT=11 也保证 FPGA 刚配置完成而
+// PLL 尚未输出时钟时，板级 SRAM/UART 引脚仍处于安全状态。
 reg [1:0] reset_pipe = 2'b11;
-always @(posedge cpu_clk) begin
+always @(posedge cpu_clk or negedge clock_locked) begin
     if (!clock_locked)
         reset_pipe <= 2'b11;
     else
         reset_pipe <= {reset_pipe[0], 1'b0};
 end
 wire cpu_reset = reset_pipe[1];
+wire io_active = ~cpu_reset;
 
 wire        inst_rd_req;
 wire [31:0] inst_rd_addr;
@@ -102,13 +104,38 @@ wire [31:0] base_ram_wdat;
 wire [31:0] ext_ram_wdat;
 wire        base_ram_wdrive;
 wire        ext_ram_wdrive;
+wire [19:0] base_ram_addr_int;
+wire [ 3:0] base_ram_be_n_int;
+wire        base_ram_ce_n_int;
+wire        base_ram_oe_n_int;
+wire        base_ram_we_n_int;
+wire [19:0] ext_ram_addr_int;
+wire [ 3:0] ext_ram_be_n_int;
+wire        ext_ram_ce_n_int;
+wire        ext_ram_oe_n_int;
+wire        ext_ram_we_n_int;
 
-assign base_ram_data = base_ram_wdrive ? base_ram_wdat : 32'bz;
-assign ext_ram_data  = ext_ram_wdrive  ? ext_ram_wdat  : 32'bz;
+// BaseRAM 低 8 位与板载下载控制器共享。PLL 尚未起振时，后级同步逻辑没有
+// 时钟可执行 reset 分支，因此不能直接把控制器寄存器接到引脚。用带 INIT 的
+// cpu_reset 在顶层强制撤销片选/读写使能和数据驱动，避免下载 monitor 时争用
+// SRAM；ExtRAM 同样采用安全门控。
+assign base_ram_addr = base_ram_addr_int;
+assign base_ram_be_n = io_active ? base_ram_be_n_int : 4'hf;
+assign base_ram_ce_n = io_active ? base_ram_ce_n_int : 1'b1;
+assign base_ram_oe_n = io_active ? base_ram_oe_n_int : 1'b1;
+assign base_ram_we_n = io_active ? base_ram_we_n_int : 1'b1;
+assign base_ram_data = (io_active & base_ram_wdrive) ? base_ram_wdat : 32'bz;
+
+assign ext_ram_addr = ext_ram_addr_int;
+assign ext_ram_be_n = io_active ? ext_ram_be_n_int : 4'hf;
+assign ext_ram_ce_n = io_active ? ext_ram_ce_n_int : 1'b1;
+assign ext_ram_oe_n = io_active ? ext_ram_oe_n_int : 1'b1;
+assign ext_ram_we_n = io_active ? ext_ram_we_n_int : 1'b1;
+assign ext_ram_data = (io_active & ext_ram_wdrive) ? ext_ram_wdat : 32'bz;
 
 wire uart_txd;
 wire uart_rxd = UART_RX;
-assign UART_TX = uart_txd;
+assign UART_TX = io_active ? uart_txd : 1'b1;
 
 mycpu_top u_cpu (
     .clk            (cpu_clk),
@@ -165,19 +192,19 @@ mem_bridge #(
     .data_wr_strb   (data_wr_strb),
     .data_wr_data   (data_wr_data),
     .data_wr_ok     (data_wr_ok),
-    .base_ram_addr  (base_ram_addr),
-    .base_ram_be_n  (base_ram_be_n),
-    .base_ram_ce_n  (base_ram_ce_n),
-    .base_ram_oe_n  (base_ram_oe_n),
-    .base_ram_we_n  (base_ram_we_n),
+    .base_ram_addr  (base_ram_addr_int),
+    .base_ram_be_n  (base_ram_be_n_int),
+    .base_ram_ce_n  (base_ram_ce_n_int),
+    .base_ram_oe_n  (base_ram_oe_n_int),
+    .base_ram_we_n  (base_ram_we_n_int),
     .base_ram_wdrive(base_ram_wdrive),
     .base_ram_wdat  (base_ram_wdat),
     .base_ram_rdat  (base_ram_data),
-    .ext_ram_addr   (ext_ram_addr),
-    .ext_ram_be_n   (ext_ram_be_n),
-    .ext_ram_ce_n   (ext_ram_ce_n),
-    .ext_ram_oe_n   (ext_ram_oe_n),
-    .ext_ram_we_n   (ext_ram_we_n),
+    .ext_ram_addr   (ext_ram_addr_int),
+    .ext_ram_be_n   (ext_ram_be_n_int),
+    .ext_ram_ce_n   (ext_ram_ce_n_int),
+    .ext_ram_oe_n   (ext_ram_oe_n_int),
+    .ext_ram_we_n   (ext_ram_we_n_int),
     .ext_ram_wdrive (ext_ram_wdrive),
     .ext_ram_wdat   (ext_ram_wdat),
     .ext_ram_rdat   (ext_ram_data),
