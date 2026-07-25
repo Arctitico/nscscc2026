@@ -234,6 +234,13 @@ module tb_perf;
     reg [63:0] base_inst_cycles;
     reg [63:0] base_data_read_cycles;
     reg [63:0] base_data_write_cycles;
+    reg [63:0] policy_enter_count;
+    reg [63:0] policy_exit_hit_count;
+    reg [63:0] policy_exit_pattern_count;
+    reg [63:0] policy_word_start_count;
+    reg [63:0] policy_word_done_count;
+    reg [63:0] policy_probe_start_count;
+    reg [63:0] policy_line_wait_cycles;
     reg        prev_miss_valid;
     reg [31:0] prev_miss_line;
     reg        prev_if_expected_valid;
@@ -258,6 +265,14 @@ module tb_perf;
     wire if_selected_pred = u_cpu.bp_taken0 |
                             (u_cpu.u_IF.want_s1 & u_cpu.bp_taken1);
     wire [31:0] if_next_pc = u_cpu.u_IF.next_pc;
+    wire policy_enter = u_cpu.u_dcache.policy_enter_event;
+    wire policy_exit_hit = u_cpu.u_dcache.policy_exit_hit_event;
+    wire policy_exit_pattern =
+        u_cpu.u_dcache.policy_exit_pattern_event;
+    wire policy_word_start = u_cpu.u_dcache.policy_word_start;
+    wire policy_word_done = u_cpu.u_dcache.word_read_done;
+    wire policy_probe_start = u_cpu.u_dcache.policy_probe_start;
+    wire policy_line_wait = u_cpu.u_dcache.policy_line_wait;
     localparam [1:0] IF_ORIGIN_OTHER = 2'd0;
     localparam [1:0] IF_ORIGIN_SEQ   = 2'd1;
     localparam [1:0] IF_ORIGIN_PRED  = 2'd2;
@@ -288,6 +303,13 @@ module tb_perf;
             prev_if_expected_valid <= 1'b0;
             accepted_if_origin     <= IF_ORIGIN_OTHER;
             last_fill_valid        <= 1'b0;
+            policy_enter_count     <= 64'b0;
+            policy_exit_hit_count  <= 64'b0;
+            policy_exit_pattern_count <= 64'b0;
+            policy_word_start_count <= 64'b0;
+            policy_word_done_count <= 64'b0;
+            policy_probe_start_count <= 64'b0;
+            policy_line_wait_cycles <= 64'b0;
         end else if (marker_start) begin
             counting               <= 1'b1;
             start_cycle            <= u_cpu.perf_cycle;
@@ -327,6 +349,13 @@ module tb_perf;
             prev_if_expected_valid <= 1'b0;
             accepted_if_origin     <= IF_ORIGIN_OTHER;
             last_fill_valid        <= 1'b0;
+            policy_enter_count     <= 64'b0;
+            policy_exit_hit_count  <= 64'b0;
+            policy_exit_pattern_count <= 64'b0;
+            policy_word_start_count <= 64'b0;
+            policy_word_done_count <= 64'b0;
+            policy_probe_start_count <= 64'b0;
+            policy_line_wait_cycles <= 64'b0;
         end else if (marker_end & counting) begin
             counting       <= 1'b0;
             finished       <= 1'b1;
@@ -359,6 +388,25 @@ module tb_perf;
                 data_wr_done_count <= data_wr_done_count + 64'd1;
             if ((u_bridge.u_ext.state != 1'b0) & u_bridge.u_ext.write_r)
                 ext_write_active_cycles <= ext_write_active_cycles + 64'd1;
+            if (policy_enter)
+                policy_enter_count <= policy_enter_count + 64'd1;
+            if (policy_exit_hit)
+                policy_exit_hit_count <= policy_exit_hit_count + 64'd1;
+            if (policy_exit_pattern)
+                policy_exit_pattern_count <=
+                    policy_exit_pattern_count + 64'd1;
+            if (policy_word_start)
+                policy_word_start_count <=
+                    policy_word_start_count + 64'd1;
+            if (policy_word_done)
+                policy_word_done_count <=
+                    policy_word_done_count + 64'd1;
+            if (policy_probe_start)
+                policy_probe_start_count <=
+                    policy_probe_start_count + 64'd1;
+            if (policy_line_wait)
+                policy_line_wait_cycles <=
+                    policy_line_wait_cycles + 64'd1;
 
             if (!u_bridge.base_busy)
                 base_idle_cycles <= base_idle_cycles + 64'd1;
@@ -527,8 +575,16 @@ module tb_perf;
         $display("[PREFETCH] base idle=%0d inst=%0d data_read=%0d data_write=%0d",
                  base_idle_cycles, base_inst_cycles,
                  base_data_read_cycles, base_data_write_cycles);
+        $display("[ADAPTIVE] enter=%0d exit_hit=%0d exit_pattern=%0d word_start=%0d word_done=%0d probe=%0d line_wait=%0d",
+                 policy_enter_count, policy_exit_hit_count,
+                 policy_exit_pattern_count, policy_word_start_count,
+                 policy_word_done_count, policy_probe_start_count,
+                 policy_line_wait_cycles);
         if (mismatches != 0)
             $fatal(1, "DIRECT PERF FAILED: %0d result mismatches", mismatches);
+        if (policy_word_start_count != policy_word_done_count)
+            $fatal(1, "ADAPTIVE WORD READ LEAK: start=%0d done=%0d",
+                   policy_word_start_count, policy_word_done_count);
         $display("==== DIRECT PERF PASSED ====");
         $finish;
     end

@@ -3,9 +3,11 @@
 //
 // - 4 KiB、2 路组相联、16B cache line，write-through/no-write-allocate。
 // - BaseRAM/ExtRAM 0x1c000000-0x1c7fffff 可缓存；UART/其余地址旁路。
-// - 普通 SRAM store 命中时更新 cache，同时进入两项 write buffer；miss 时
-//   no-write-allocate，仍由两项 write buffer 写内存。
-// - load miss 发起 4 beat 重填。外部 size=3'b100 是本核内部的“16B line”编码。
+// - 普通 SRAM store 命中时更新 cache，同时进入四项 write buffer；miss 时
+//   no-write-allocate，仍由四项 write buffer 写内存。
+// - 普通 load miss 发起 critical-word-first 四 beat 重填。识别为低局部性的
+//   load PC 改走单 word/no-allocate，并周期性恢复完整行 probe。
+//   外部 size=3'b100 是本核内部的“16B line”编码。
 // - 指令 miss 只有在 write buffer 排空后才能发出，保证自修改代码可见。
 // ============================================================================
 module dcache_prefetcher (
@@ -13,8 +15,21 @@ module dcache_prefetcher (
     input  wire        reset,
 
     input  wire        train_valid,
+    input  wire        train_was_hit,
     input  wire [31:0] train_pc,
     input  wire [31:0] train_addr,
+
+    // 只连接到 D-cache 的 request-capture 寄存器，不能直接控制 FSM。
+    input  wire        query_valid,
+    input  wire [31:0] query_pc,
+    output wire        query_word_only,
+    output wire        query_probe,
+
+    // hit，或真正开始的 word-only/probe 服务反馈。
+    input  wire        policy_feedback_valid,
+    input  wire        policy_feedback_hit,
+    input  wire        policy_feedback_probe,
+    input  wire [31:0] policy_feedback_pc,
 
     input  wire [ 1:0] buffer_valid,
     input  wire [27:0] buffer_line0,
@@ -24,8 +39,16 @@ module dcache_prefetcher (
 
     output wire        candidate_valid,
     output wire [31:0] candidate_addr,
-    input  wire        candidate_take
+    input  wire        candidate_take,
+
+    output reg         policy_enter_event,
+    output reg         policy_exit_hit_event,
+    output reg         policy_exit_pattern_event
 );
+
+localparam [2:0] ENTER_SCORE     = 3'd3;
+localparam [2:0] COLD_SAMPLES    = 3'd4;
+localparam [3:0] PROBE_DUE_COUNT = 4'd15;
 
 reg [7:0] pred_valid;
 reg [26:0] pred_pc_tag [0:7];
@@ -33,24 +56,53 @@ reg [27:0] pred_last_line [0:7];
 reg signed [27:0] pred_stride [0:7];
 reg [1:0] pred_conf [0:7];
 
-wire [2:0] pred_idx = train_pc[4:2];
+// 分类状态与同一个 full-tagged PC 表项绑定。新 PC/alias 一律从完整行冷启动。
+reg [2:0] low_score [0:7];
+reg [2:0] sample_count [0:7];
+reg       word_mode [0:7];
+reg [3:0] probe_count [0:7];
+
+wire [2:0] train_idx = train_pc[4:2];
 wire [27:0] train_line = train_addr[31:4];
-wire pred_match = pred_valid[pred_idx] &&
-                  (pred_pc_tag[pred_idx] == train_pc[31:5]);
+wire train_match = pred_valid[train_idx] &&
+                   (pred_pc_tag[train_idx] == train_pc[31:5]);
 wire signed [27:0] observed_stride =
-    $signed(train_line) - $signed(pred_last_line[pred_idx]);
-wire stride_match = observed_stride == pred_stride[pred_idx];
+    $signed(train_line) - $signed(pred_last_line[train_idx]);
+wire stride_match = observed_stride == pred_stride[train_idx];
+wire stride_zero = observed_stride == 28'sd0;
 wire [1:0] next_conf =
     stride_match ?
-        (pred_conf[pred_idx] == 2'b11 ? 2'b11 :
-                                             pred_conf[pred_idx] + 1'b1) :
-        (pred_conf[pred_idx] == 2'b00 ? 2'b00 :
-                                             pred_conf[pred_idx] - 1'b1);
+        (pred_conf[train_idx] == 2'b11 ? 2'b11 :
+                                              pred_conf[train_idx] + 1'b1) :
+        (pred_conf[train_idx] == 2'b00 ? 2'b00 :
+                                              pred_conf[train_idx] - 1'b1);
 wire signed [27:0] next_stride =
-    (!stride_match && pred_conf[pred_idx] == 2'b00) ?
-        observed_stride : pred_stride[pred_idx];
+    (!stride_match && pred_conf[train_idx] == 2'b00) ?
+        observed_stride : pred_stride[train_idx];
 
-// Stage 1: finish table lookup, stride learning, and confidence update.
+wire train_bad = ~train_was_hit && ~stride_zero && ~stride_match &&
+                 (pred_conf[train_idx] == 2'b00);
+wire train_good = train_was_hit || stride_zero || stride_match;
+wire stable_exit = ~stride_zero && stride_match && next_conf[1];
+wire enter_now = train_bad &&
+                 (sample_count[train_idx] >= COLD_SAMPLES - 1'b1) &&
+                 (low_score[train_idx] >= ENTER_SCORE - 1'b1);
+
+wire [2:0] query_idx = query_pc[4:2];
+wire query_match = pred_valid[query_idx] &&
+                   (pred_pc_tag[query_idx] == query_pc[31:5]);
+wire query_mode = query_valid && query_match && word_mode[query_idx];
+wire query_probe_due = probe_count[query_idx] == PROBE_DUE_COUNT;
+assign query_word_only = query_mode && ~query_probe_due;
+assign query_probe = query_mode && query_probe_due;
+
+wire [2:0] feedback_idx = policy_feedback_pc[4:2];
+wire feedback_match = pred_valid[feedback_idx] &&
+                      (pred_pc_tag[feedback_idx] ==
+                       policy_feedback_pc[31:5]);
+
+// Stage 1：保持原 stride/confidence 学习，同时更新独立的 allocation policy。
+// word mode 中的同 line 访问是恢复证据，不用 delta=0 覆盖已有非零 stride。
 reg               predict_s1_valid;
 reg [27:0]        predict_s1_line;
 reg signed [27:0] predict_s1_stride;
@@ -59,56 +111,122 @@ always @(posedge clk) begin
     if (reset) begin
         pred_valid <= 8'b0;
         predict_s1_valid <= 1'b0;
+        policy_enter_event <= 1'b0;
+        policy_exit_hit_event <= 1'b0;
+        policy_exit_pattern_event <= 1'b0;
     end else begin
         predict_s1_valid <= 1'b0;
+        policy_enter_event <= 1'b0;
+        policy_exit_hit_event <= 1'b0;
+        policy_exit_pattern_event <= 1'b0;
+
+        // 任意真实 cache/stream-buffer hit 都说明 allocation 仍有价值。
+        // 若同拍 train 替换 alias 表项，下面的冷启动赋值优先。
+        if (policy_feedback_valid && policy_feedback_hit &&
+            feedback_match) begin
+            if (word_mode[feedback_idx])
+                policy_exit_hit_event <= 1'b1;
+            low_score[feedback_idx] <= 3'd0;
+            word_mode[feedback_idx] <= 1'b0;
+            probe_count[feedback_idx] <= 4'd0;
+        end
+
+        // 只统计真正开始的服务，不在 query 时提前消费 probe。
+        if (policy_feedback_valid && ~policy_feedback_hit &&
+            feedback_match && word_mode[feedback_idx]) begin
+            if (policy_feedback_probe) begin
+                probe_count[feedback_idx] <= 4'd0;
+            end else if (probe_count[feedback_idx] != PROBE_DUE_COUNT) begin
+                probe_count[feedback_idx] <=
+                    probe_count[feedback_idx] + 1'b1;
+            end
+        end
+
         if (train_valid) begin
-            if (!pred_match) begin
-                pred_valid[pred_idx] <= 1'b1;
-                pred_pc_tag[pred_idx] <= train_pc[31:5];
-                pred_last_line[pred_idx] <= train_line;
-                pred_stride[pred_idx] <= 28'sd0;
-                pred_conf[pred_idx] <= 2'b00;
+            if (!train_match) begin
+                pred_valid[train_idx] <= 1'b1;
+                pred_pc_tag[train_idx] <= train_pc[31:5];
+                pred_last_line[train_idx] <= train_line;
+                pred_stride[train_idx] <= 28'sd0;
+                pred_conf[train_idx] <= 2'b00;
+                low_score[train_idx] <= 3'd0;
+                sample_count[train_idx] <= 3'd1;
+                word_mode[train_idx] <= 1'b0;
+                probe_count[train_idx] <= 4'd0;
             end else begin
-                pred_last_line[pred_idx] <= train_line;
-                pred_stride[pred_idx] <= next_stride;
-                pred_conf[pred_idx] <= next_conf;
-                predict_s1_valid <= next_conf[1] && (next_stride != 0);
-                predict_s1_line <= train_line;
-                predict_s1_stride <= next_stride;
+                if (sample_count[train_idx] != 3'b111)
+                    sample_count[train_idx] <=
+                        sample_count[train_idx] + 1'b1;
+
+                if (!(word_mode[train_idx] && stride_zero)) begin
+                    pred_last_line[train_idx] <= train_line;
+                    pred_stride[train_idx] <= next_stride;
+                    pred_conf[train_idx] <= next_conf;
+                    predict_s1_valid <= next_conf[1] &&
+                                        (next_stride != 0) &&
+                                        ~word_mode[train_idx];
+                    predict_s1_line <= train_line;
+                    predict_s1_stride <= next_stride;
+                end
+
+                if (train_was_hit || stride_zero || stable_exit) begin
+                    // prefetch hit 已由上面的 feedback 分支记为 hit exit；
+                    // 这里只为同 line/stable-stride 恢复记 pattern exit。
+                    if (word_mode[train_idx] && ~train_was_hit)
+                        policy_exit_pattern_event <= 1'b1;
+                    low_score[train_idx] <= 3'd0;
+                    word_mode[train_idx] <= 1'b0;
+                    probe_count[train_idx] <= 4'd0;
+                end else begin
+                    if (train_good) begin
+                        low_score[train_idx] <=
+                            (low_score[train_idx] <= 3'd2) ? 3'd0 :
+                            low_score[train_idx] - 3'd2;
+                    end else if (train_bad &&
+                                 low_score[train_idx] != 3'b111) begin
+                        low_score[train_idx] <=
+                            low_score[train_idx] + 1'b1;
+                    end
+
+                    if (!word_mode[train_idx] && enter_now) begin
+                        word_mode[train_idx] <= 1'b1;
+                        probe_count[train_idx] <= 4'd0;
+                        policy_enter_event <= 1'b1;
+                    end
+                end
             end
         end
     end
 end
 
-    // Stage 2: add the predicted line, filter duplicates, and hold one
-    // candidate until D-cache accepts it.
-    reg        candidate_valid_r;
-    reg [27:0] candidate_line_r;
+// Stage 2：生成 predicted line、过滤重复，并保持到 D-cache 接受。
+reg        candidate_valid_r;
+reg [27:0] candidate_line_r;
 
-    wire [27:0] predicted_line =
-        $unsigned($signed(predict_s1_line) + predict_s1_stride);
-    wire predicted_cacheable = (predicted_line[27:19] == 9'h038);
-    wire predicted_duplicate =
-        (buffer_valid[0] && buffer_line0 == predicted_line) |
-        (buffer_valid[1] && buffer_line1 == predicted_line) |
-        (refill_busy && refill_line == predicted_line) |
-        (candidate_valid_r && candidate_line_r == predicted_line);
-    wire candidate_slot_ready = ~candidate_valid_r | candidate_take;
-    wire candidate_push = predict_s1_valid && predicted_cacheable &&
-                          ~predicted_duplicate && candidate_slot_ready;
+wire [27:0] predicted_line =
+    $unsigned($signed(predict_s1_line) + predict_s1_stride);
+wire predicted_cacheable = (predicted_line[27:19] == 9'h038);
+wire predicted_duplicate =
+    (buffer_valid[0] && buffer_line0 == predicted_line) |
+    (buffer_valid[1] && buffer_line1 == predicted_line) |
+    (refill_busy && refill_line == predicted_line) |
+    (candidate_valid_r && candidate_line_r == predicted_line);
+wire candidate_slot_ready = ~candidate_valid_r | candidate_take;
+wire candidate_push = predict_s1_valid && predicted_cacheable &&
+                      ~predicted_duplicate && candidate_slot_ready;
 
 always @(posedge clk) begin
     if (reset) begin
         candidate_valid_r <= 1'b0;
     end else begin
-            if (candidate_take)
-                candidate_valid_r <= 1'b0;
-            if (candidate_push) begin
-                candidate_valid_r <= 1'b1;
-                candidate_line_r <= predicted_line;
-            end
+        if (candidate_take)
+            candidate_valid_r <= 1'b0;
+        if (candidate_push) begin
+            candidate_valid_r <= 1'b1;
+            candidate_line_r <= predicted_line;
         end
     end
+end
 
 assign candidate_valid = candidate_valid_r;
 assign candidate_addr = {candidate_line_r, 4'b0};
@@ -164,6 +282,7 @@ localparam [2:0] S_REFILL   = 3'd3;
 localparam [2:0] S_RELOOKUP = 3'd4;
 localparam [2:0] S_UNCACHED = 3'd5;
 localparam [2:0] S_WAIT_PF  = 3'd6;
+localparam [2:0] S_WORD_READ = 3'd7;
 
 reg [2:0] state;
 
@@ -173,6 +292,11 @@ reg [ 2:0] req_size;
 reg [31:0] req_wdata;
 reg [31:0] req_pc;
 reg        req_trained;
+reg        req_word_only;
+reg        req_probe;
+
+wire policy_query_word_only;
+wire policy_query_probe;
 
 wire req_store = |req_we;
 wire req_cacheable = (req_addr[31:23] == 9'h038);
@@ -311,10 +435,12 @@ write_buffer u_write_buffer (
 // ------------------------------ CPU response ------------------------------
 wire uncached_done  = (state == S_UNCACHED) &
                       (req_store ? mem_wr_ok : mem_rd_ok);
+wire word_read_done = (state == S_WORD_READ) & mem_rd_ok;
 
 assign cpu_data_ok = cache_load_hit | cache_store_finish | uncached_done |
-                     refill_critical;
+                     refill_critical | word_read_done;
 assign cpu_rdata   = uncached_done    ? mem_rdata :
+                     word_read_done   ? mem_rdata :
                      refill_critical  ? mem_rdata : hit_data;
 
 assign perf_hit      = cache_load_hit;
@@ -329,7 +455,8 @@ assign inst_safe = wb_empty & ~(cpu_req & (|cpu_we));
 // ------------------------------ memory ports ------------------------------
 wire refill_req      = (state == S_REFILL);
 wire uncached_load   = (state == S_UNCACHED) & ~req_store;
-wire demand_mem_rd_req = refill_req | uncached_load;
+wire word_read_req   = (state == S_WORD_READ);
+wire demand_mem_rd_req = refill_req | uncached_load | word_read_req;
 
 assign mem_rd_req  = demand_mem_rd_req | pf_busy;
 assign mem_rd_size = demand_mem_rd_req ?
@@ -364,11 +491,14 @@ always @(posedge clk) begin
             else if (pf_busy)
                 state <= S_WAIT_PF;
             else
-                state <= wb_line_conflict ? S_WAIT_WB : S_REFILL;
+                state <= wb_line_conflict ? S_WAIT_WB :
+                         (req_word_only ? S_WORD_READ : S_REFILL);
         S_WAIT_WB:
             if (req_cacheable ? ~wb_line_conflict : wb_empty)
                 state <= pf_busy ? S_WAIT_PF :
-                         (req_cacheable ? S_REFILL : S_UNCACHED);
+                         (req_cacheable ?
+                          (req_word_only ? S_WORD_READ : S_REFILL) :
+                          S_UNCACHED);
         S_WAIT_PF:
             if (!pf_busy)
                 state <= S_LOOKUP;
@@ -381,6 +511,9 @@ always @(posedge clk) begin
             state <= S_LOOKUP;
         S_UNCACHED:
             if (req_store ? mem_wr_ok : mem_rd_ok)
+                state <= S_IDLE;
+        S_WORD_READ:
+            if (mem_rd_ok)
                 state <= S_IDLE;
         default:
             state <= S_IDLE;
@@ -395,6 +528,8 @@ always @(posedge clk) begin
         req_size  <= cpu_size;
         req_wdata <= cpu_wdata;
         req_pc    <= cpu_pc;
+        req_word_only <= policy_query_word_only;
+        req_probe <= policy_query_probe;
     end
 end
 
@@ -422,6 +557,25 @@ wire train_prefetch_hit = cache_load_hit & pf_hit &
 wire predictor_train = ~req_trained &&
                        (train_demand_miss | train_prefetch_hit);
 
+// query hint 已在 cpu_accept 沿锁存。这里只在请求真正离开 LOOKUP/WAIT_WB
+// 开始单字服务或完整行 probe 时反馈，等待期间不会重复计数。
+wire lookup_service_start = train_demand_miss && ~pf_busy &&
+                            ~wb_line_conflict;
+wire wait_service_start = (state == S_WAIT_WB) & req_cacheable &
+                          ~wb_line_conflict & ~pf_busy;
+wire policy_word_start = (lookup_service_start | wait_service_start) &
+                         req_word_only;
+wire policy_probe_start = (lookup_service_start | wait_service_start) &
+                          req_probe;
+wire policy_line_wait = (state == S_WAIT_WB) & req_cacheable &
+                        req_word_only & wb_line_conflict;
+wire policy_feedback_valid = cache_load_hit | policy_word_start |
+                             policy_probe_start;
+wire policy_feedback_hit = cache_load_hit;
+wire policy_enter_event;
+wire policy_exit_hit_event;
+wire policy_exit_pattern_event;
+
 wire pf_start_window = (state == S_IDLE) | cache_load_hit;
 wire incoming_store_same_chip = cpu_accept && (|cpu_we) &&
                                 (cpu_addr[31:22] ==
@@ -439,8 +593,17 @@ dcache_prefetcher u_prefetcher (
     .clk            (clk),
     .reset          (reset),
     .train_valid    (predictor_train),
+    .train_was_hit  (train_prefetch_hit),
     .train_pc       (req_pc),
     .train_addr     (req_addr),
+    .query_valid    (cpu_accept),
+    .query_pc       (cpu_pc),
+    .query_word_only(policy_query_word_only),
+    .query_probe    (policy_query_probe),
+    .policy_feedback_valid(policy_feedback_valid),
+    .policy_feedback_hit(policy_feedback_hit),
+    .policy_feedback_probe(policy_probe_start),
+    .policy_feedback_pc(req_pc),
     .buffer_valid   (pf_valid),
     .buffer_line0   (pf_line[0]),
     .buffer_line1   (pf_line[1]),
@@ -448,7 +611,10 @@ dcache_prefetcher u_prefetcher (
     .refill_line    (pf_active_addr[31:4]),
     .candidate_valid(pf_candidate_valid),
     .candidate_addr (pf_candidate_addr),
-    .candidate_take (pf_start)
+    .candidate_take (pf_start),
+    .policy_enter_event(policy_enter_event),
+    .policy_exit_hit_event(policy_exit_hit_event),
+    .policy_exit_pattern_event(policy_exit_pattern_event)
 );
 
 always @(posedge clk) begin

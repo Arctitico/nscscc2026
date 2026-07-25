@@ -5,6 +5,8 @@
 #   make uart   连续两字节 UART 物理帧/停止位自检
 #   make sram-timing  SRAM 读/写/写后保持周期参数自检
 #   make write-buffer  四项 FIFO/full-turnover/conflict 定向自检
+#   make dcache-policy  word-only 冷启动/迟滞/probe/recovery 定向自检
+#   make dcache-adaptive  word-only/probe/WB-wait D-cache 集成自检
 #   make supervisor  启动当前 2026 auto kernel 并核对 UART 欢迎字符串
 #   make level1      运行 52 字节/64 项 Fibonacci 第一阶段测试
 #   make clean
@@ -62,6 +64,14 @@ TFLAGS = --binary --timing --top-module tb_sram_ctrl \
 WBFLAGS = --binary --timing --top-module tb_write_buffer -o Vtb_write_buffer \
           -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
           -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
+POLICYFLAGS = --binary --timing --top-module tb_dcache_policy \
+              -o Vtb_dcache_policy -Wno-WIDTH -Wno-DECLFILENAME \
+              -Wno-UNUSED -Wno-EOFNEWLINE -Wno-WIDTHEXPAND \
+              -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
+ADAPTFLAGS = --binary --timing --top-module tb_dcache_adaptive \
+             -o Vtb_dcache_adaptive -Wno-WIDTH -Wno-DECLFILENAME \
+             -Wno-UNUSED -Wno-EOFNEWLINE -Wno-WIDTHEXPAND \
+             -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
 PFLAGS = --binary --timing --top-module tb_perf -o Vtb_perf \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
@@ -146,6 +156,16 @@ uart:
 write-buffer:
 	verilator $(WBFLAGS) $(SRC_DIR)/write_buffer.sv tb_write_buffer.sv
 	./obj_dir/Vtb_write_buffer
+
+dcache-policy:
+	verilator $(POLICYFLAGS) $(SRC_DIR)/write_buffer.sv \
+		$(SRC_DIR)/dcache.sv tb_dcache_policy.sv
+	./obj_dir/Vtb_dcache_policy
+
+dcache-adaptive:
+	verilator $(ADAPTFLAGS) $(SRC_DIR)/write_buffer.sv \
+		$(SRC_DIR)/dcache.sv tb_dcache_adaptive.sv
+	./obj_dir/Vtb_dcache_adaptive
 
 sram-timing:
 	verilator $(TFLAGS) -o Vtb_sram_ctrl_111 \
