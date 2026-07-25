@@ -275,6 +275,9 @@ wire [ 3:0] wb_mem_strb;
 wire [31:0] wb_mem_data;
 wire        wb_empty;
 wire        wb_line_conflict;
+wire        wb_prefetch_chip_conflict;
+wire        pf_candidate_valid;
+wire [31:0] pf_candidate_addr;
 
 wire cache_store_finish = (state == S_LOOKUP) & req_cacheable & req_store &
                           wb_enq_ready;
@@ -297,7 +300,9 @@ write_buffer u_write_buffer (
     .mem_done  (wb_mem_req & mem_wr_ok & ~uncached_store),
     .empty     (wb_empty),
     .query_addr(req_addr),
-    .line_conflict(wb_line_conflict)
+    .line_conflict(wb_line_conflict),
+    .chip_query_addr(pf_candidate_addr),
+    .chip_conflict(wb_prefetch_chip_conflict)
 );
 
 // ------------------------------ CPU response ------------------------------
@@ -413,13 +418,14 @@ wire train_prefetch_hit = cache_load_hit & pf_hit &
                           pf_hit_unused_q;
 wire predictor_train = ~req_trained &&
                        (train_demand_miss | train_prefetch_hit);
-wire pf_candidate_valid;
-wire [31:0] pf_candidate_addr;
 
 wire pf_start_window = (state == S_IDLE) | cache_load_hit;
+wire incoming_store_same_chip = cpu_accept && (|cpu_we) &&
+                                (cpu_addr[31:22] ==
+                                 pf_candidate_addr[31:22]);
 wire pf_start = pf_candidate_valid && ~pf_busy &&
-                wb_empty && pf_start_window &&
-                ~(cpu_req && (|cpu_we)) &&
+                ~wb_prefetch_chip_conflict && pf_start_window &&
+                ~incoming_store_same_chip &&
                 ~(cpu_req && (cpu_addr[31:23] != 9'h038));
 wire pf_refill_fire = pf_busy && mem_rd_ok;
 wire pf_refill_last = pf_refill_fire & (pf_count == 2'b11);

@@ -24,7 +24,9 @@ module write_buffer (
 
     output wire        empty,
     input  wire [31:0] query_addr,
-    output wire        line_conflict
+    output wire        line_conflict,
+    input  wire [31:0] chip_query_addr,
+    output wire        chip_conflict
 );
 
 reg [31:0] addr [0:1];
@@ -49,6 +51,10 @@ wire valid0 = (count == 2'd2) | ((count == 2'd1) & (rd_ptr == 1'b0));
 wire valid1 = (count == 2'd2) | ((count == 2'd1) & (rd_ptr == 1'b1));
 assign line_conflict = (valid0 & (addr[0][31:4] == query_addr[31:4])) |
                        (valid1 & (addr[1][31:4] == query_addr[31:4]));
+assign chip_conflict = (valid0 &
+                        (addr[0][31:22] == chip_query_addr[31:22])) |
+                       (valid1 &
+                        (addr[1][31:22] == chip_query_addr[31:22]));
 
 always @(posedge clk) begin
     if (reset) begin
