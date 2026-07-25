@@ -122,15 +122,7 @@ typedef struct packed {
     logic [31:0] rf_wdata;     // EX2 已汇合 ALU/mul/load 后的最终写回数据
     logic        rf_we;
     logic [ 4:0] rf_waddr;
-} ex_wb_slot_t;
-
-typedef struct packed {
-    logic [31:0] pc;
-    logic [31:0] inst;
-    logic [31:0] rf_wdata;
-    logic        rf_we;
-    logic [ 4:0] rf_waddr;
-} wb_cm_slot_t;
+} ex_cm_slot_t;
 
 // ===================== 成对级间总线 =====================
 typedef struct packed {
@@ -166,23 +158,17 @@ typedef struct packed {
 } ex1_to_ex2_bus_t;
 
 typedef struct packed {
-    ex_wb_slot_t s0;
-    ex_wb_slot_t s1;
+    ex_cm_slot_t s0;
+    ex_cm_slot_t s1;
     logic        v1;
-} ex_to_wb_bus_t;
-
-typedef struct packed {
-    wb_cm_slot_t s0;
-    wb_cm_slot_t s1;
-    logic        v1;
-} wb_to_cm_bus_t;
+} ex_to_cm_bus_t;
 
 // 每个槽各自向 RF 广播一份前递信息。年轻槽优先级高于年长槽。
-// EX1/EX2 用 is_ld 表示结果尚不可消费；WB 中的数据均已完成。
+// EX1/EX2 用 is_ld 表示结果尚不可消费；CM 中的数据均已完成。
 typedef struct packed {
     logic        valid;
     logic        rf_we;
-    logic        is_ld;        // EX/WB 可置 1；CM 恒 0
+    logic        is_ld;        // EX 可置 1；CM 恒 0
     logic [ 4:0] rf_waddr;
     logic [31:0] rf_wdata;
 } fwd_bus_t;

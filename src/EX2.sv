@@ -3,7 +3,7 @@
 //
 // EX1 的专用乘法操作数寄存器与本级乘积寄存器组成 II=1 的两级乘法流水。
 // 一个 bundle 可以同时含一个 mul 和一个 mem；若访存较慢，本级仍分别锁存
-// 先到的完成状态及载荷，只有 s0/s1（有效时）都完成才向 WB 前进。
+// 先到的完成状态及载荷，只有 s0/s1（有效时）都完成才向 CM 前进。
 // ============================================================================
 import cpu_pkg::*;
 
@@ -12,12 +12,12 @@ module EX2 (
     input  wire               reset,
 
     input  wire               EX1_to_EX2_valid,
-    input  wire               WB_allow_in,
+    input  wire               CM_allow_in,
     output wire               EX2_allow_in,
-    output wire               EX2_to_WB_valid,
+    output wire               EX2_to_CM_valid,
 
     input  ex1_to_ex2_bus_t   EX1_to_EX2_BUS,
-    output ex_to_wb_bus_t     EX2_to_WB_BUS,
+    output ex_to_cm_bus_t     EX2_to_CM_BUS,
 
     output fwd_bus_t          ex2_fwd0,
     output fwd_bus_t          ex2_fwd1,
@@ -74,8 +74,8 @@ wire s1_done_now = (~s1.is_mul & ~s1.is_mem) |
 wire s0_ready_go = s0_done_q | s0_done_now;
 wire s1_ready_go = ~ex2_r.v1 | s1_done_q | s1_done_now;
 wire ex2_ready_go = s0_ready_go & s1_ready_go;
-assign EX2_to_WB_valid = ex2_valid & ex2_ready_go;
-wire ex2_fire = EX2_to_WB_valid & WB_allow_in;
+assign EX2_to_CM_valid = ex2_valid & ex2_ready_go;
+wire ex2_fire = EX2_to_CM_valid & CM_allow_in;
 wire ex2_slot_allow = ~ex2_valid | ex2_fire;
 // 乘法 token 与 EX2 bundle 一一对应：EX2 空闲时乘法器必为空；旧 bundle
 // fire 时，旧乘积要么当拍被消费，要么早已保存并消费。因此 EX2 能接收时
@@ -168,7 +168,7 @@ wire [31:0] mul_result = mul_saved ? mul_result_q : mul_low;
 wire [31:0] rf_wdata0 = write_data(s0, mem_result, mul_result);
 wire [31:0] rf_wdata1 = write_data(s1, mem_result, mul_result);
 
-assign EX2_to_WB_BUS = '{
+assign EX2_to_CM_BUS = '{
     s0: '{pc: s0.pc, inst: s0.inst, rf_wdata: rf_wdata0,
           rf_we: s0.rf_we, rf_waddr: s0.rf_waddr},
     s1: '{pc: s1.pc, inst: s1.inst, rf_wdata: rf_wdata1,

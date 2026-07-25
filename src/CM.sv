@@ -7,9 +7,9 @@ module CM (
     input  wire             clk,
     input  wire             reset,
 
-    input  wire             WB_to_CM_valid,
+    input  wire             EX2_to_CM_valid,
     output wire             CM_allow_in,
-    input  wb_to_cm_bus_t   WB_to_CM_BUS,
+    input  ex_to_cm_bus_t   EX2_to_CM_BUS,
 
     output wire   [ 3:0]    rf_we1,
     output wire   [ 4:0]    rf_waddr1,
@@ -34,17 +34,17 @@ module CM (
 );
 
 reg            cm_valid;
-wb_to_cm_bus_t cm_r;
+ex_to_cm_bus_t cm_r;
 
 assign CM_allow_in = 1'b1;
 
 always @(posedge clk) begin
     if (reset) cm_valid <= 1'b0;
-    else       cm_valid <= WB_to_CM_valid;
+    else       cm_valid <= EX2_to_CM_valid;
 end
 
 always @(posedge clk) begin
-    if (WB_to_CM_valid) cm_r <= WB_to_CM_BUS;
+    if (EX2_to_CM_valid) cm_r <= EX2_to_CM_BUS;
 end
 
 wire do_write0 = cm_valid & cm_r.s0.rf_we;

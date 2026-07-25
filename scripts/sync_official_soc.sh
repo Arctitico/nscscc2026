@@ -80,14 +80,16 @@ fi
 cpu_sources=(
     cpu_pkg.sv tools.sv alu.sv mul.sv decoder.sv regfile.sv bpu.sv
     icache.sv write_buffer.sv dcache.sv
-    IF.sv ID.sv DP.sv IS.sv RF.sv EX1.sv EX2.sv WB.sv CM.sv
+    IF.sv ID.sv DP.sv IS.sv RF.sv EX1.sv EX2.sv CM.sv
     mycpu_top.sv
 )
 soc_sources=(
     sram_ctrl.sv uart_phy.sv uart_mm.sv mem_bridge.sv board_clock.sv soc_top.sv
 )
 official_only_sources=(thinpad_top.sv)
-expected_sources=("${cpu_sources[@]}" "${soc_sources[@]}" "${official_only_sources[@]}")
+# 已退出流水线、但按本脚本“不删除目标文件”的约定允许留在官方仓库。
+retired_sources=(WB.sv)
+expected_sources=("${cpu_sources[@]}" "${soc_sources[@]}" "${official_only_sources[@]}" "${retired_sources[@]}")
 
 is_expected_source() {
     local candidate="$1"

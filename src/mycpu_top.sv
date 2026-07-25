@@ -53,8 +53,7 @@ wire IS_to_RF_valid;
 wire IS_take_two;
 wire RF_to_EX1_valid;
 wire EX1_to_EX2_valid;
-wire EX2_to_WB_valid;
-wire WB_to_CM_valid;
+wire EX2_to_CM_valid;
 
 wire ID_allow_in;
 wire DP_allow_in;
@@ -62,7 +61,6 @@ wire IS_allow_in;
 wire RF_allow_in;
 wire EX1_allow_in;
 wire EX2_allow_in;
-wire WB_allow_in;
 wire CM_allow_in;
 
 if_to_id_bus_t IF_to_ID_BUS;
@@ -71,8 +69,7 @@ dp_to_is_bus_t DP_to_IS_BUS;
 is_to_rf_bus_t IS_to_RF_BUS;
 rf_to_ex_bus_t RF_to_EX1_BUS;
 ex1_to_ex2_bus_t EX1_to_EX2_BUS;
-ex_to_wb_bus_t EX2_to_WB_BUS;
-wb_to_cm_bus_t WB_to_CM_BUS;
+ex_to_cm_bus_t EX2_to_CM_BUS;
 
 wire [31:0] bp_pc0;
 wire        bp_taken0, bp_taken1;
@@ -90,7 +87,6 @@ wire [31:0] bp_upd_target;
 
 fwd_bus_t ex1_fwd0, ex1_fwd1;
 fwd_bus_t ex2_fwd0, ex2_fwd1;
-fwd_bus_t wb_fwd0, wb_fwd1;
 fwd_bus_t cm_fwd0, cm_fwd1;
 
 wire [ 4:0] rf_raddr1, rf_raddr2, rf_raddr3, rf_raddr4;
@@ -222,8 +218,6 @@ RF u_RF (
     .ex1_fwd1      (ex1_fwd1      ),
     .ex2_fwd0      (ex2_fwd0      ),
     .ex2_fwd1      (ex2_fwd1      ),
-    .wb_fwd0       (wb_fwd0       ),
-    .wb_fwd1       (wb_fwd1       ),
     .cm_fwd0       (cm_fwd0       ),
     .cm_fwd1       (cm_fwd1       )
 );
@@ -263,11 +257,11 @@ EX2 u_EX2 (
     .clk              (clk                    ),
     .reset            (reset                  ),
     .EX1_to_EX2_valid (EX1_to_EX2_valid       ),
-    .WB_allow_in      (WB_allow_in            ),
+    .CM_allow_in      (CM_allow_in            ),
     .EX2_allow_in     (EX2_allow_in           ),
-    .EX2_to_WB_valid  (EX2_to_WB_valid        ),
+    .EX2_to_CM_valid  (EX2_to_CM_valid        ),
     .EX1_to_EX2_BUS   (EX1_to_EX2_BUS         ),
-    .EX2_to_WB_BUS    (EX2_to_WB_BUS          ),
+    .EX2_to_CM_BUS    (EX2_to_CM_BUS          ),
     .ex2_fwd0         (ex2_fwd0               ),
     .ex2_fwd1         (ex2_fwd1               ),
     .data_sram_rdata  (ex_data_sram_rdata     ),
@@ -276,25 +270,12 @@ EX2 u_EX2 (
     .perf_mul_wait    (perf_mul_wait_event     )
 );
 
-WB u_WB (
-    .clk           (clk           ),
-    .reset         (reset         ),
-    .EX_to_WB_valid(EX2_to_WB_valid),
-    .CM_allow_in   (CM_allow_in   ),
-    .WB_allow_in   (WB_allow_in   ),
-    .WB_to_CM_valid(WB_to_CM_valid),
-    .EX_to_WB_BUS  (EX2_to_WB_BUS ),
-    .WB_to_CM_BUS  (WB_to_CM_BUS  ),
-    .wb_fwd0       (wb_fwd0       ),
-    .wb_fwd1       (wb_fwd1       )
-);
-
 CM u_CM (
     .clk               (clk               ),
     .reset             (reset             ),
-    .WB_to_CM_valid    (WB_to_CM_valid    ),
+    .EX2_to_CM_valid   (EX2_to_CM_valid   ),
     .CM_allow_in       (CM_allow_in       ),
-    .WB_to_CM_BUS      (WB_to_CM_BUS      ),
+    .EX2_to_CM_BUS     (EX2_to_CM_BUS     ),
     .rf_we1            (rf_we1            ),
     .rf_waddr1         (rf_waddr1         ),
     .rf_wdata1         (rf_wdata1         ),
@@ -441,9 +422,9 @@ always @(posedge clk) begin
         perf_branch_mispred <= 64'b0;
     end else begin
         perf_cycle <= perf_cycle + 64'd1;
-        if (!WB_to_CM_valid)
+        if (!EX2_to_CM_valid)
             perf_commit0 <= perf_commit0 + 64'd1;
-        else if (WB_to_CM_BUS.v1)
+        else if (EX2_to_CM_BUS.v1)
             perf_commit2 <= perf_commit2 + 64'd1;
         else
             perf_commit1 <= perf_commit1 + 64'd1;

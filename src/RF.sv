@@ -29,8 +29,6 @@ module RF (
     input  fwd_bus_t        ex1_fwd1,
     input  fwd_bus_t        ex2_fwd0,
     input  fwd_bus_t        ex2_fwd1,
-    input  fwd_bus_t        wb_fwd0,
-    input  fwd_bus_t        wb_fwd1,
     input  fwd_bus_t        cm_fwd0,
     input  fwd_bus_t        cm_fwd1
 );
@@ -56,15 +54,12 @@ function automatic [31:0] forward(
     input [31:0] raw,
     input fwd_bus_t e11, input fwd_bus_t e10,
     input fwd_bus_t e21, input fwd_bus_t e20,
-    input fwd_bus_t w1, input fwd_bus_t w0,
     input fwd_bus_t c1, input fwd_bus_t c0
 );
     if      (e11.valid & e11.rf_we & ~e11.is_ld & (e11.rf_waddr == addr) & (addr != 5'b0)) forward = e11.rf_wdata;
     else if (e10.valid & e10.rf_we & ~e10.is_ld & (e10.rf_waddr == addr) & (addr != 5'b0)) forward = e10.rf_wdata;
     else if (e21.valid & e21.rf_we & ~e21.is_ld & (e21.rf_waddr == addr) & (addr != 5'b0)) forward = e21.rf_wdata;
     else if (e20.valid & e20.rf_we & ~e20.is_ld & (e20.rf_waddr == addr) & (addr != 5'b0)) forward = e20.rf_wdata;
-    else if (w1.valid  & w1.rf_we  & ~w1.is_ld  & (w1.rf_waddr  == addr) & (addr != 5'b0)) forward = w1.rf_wdata;
-    else if (w0.valid  & w0.rf_we  & ~w0.is_ld  & (w0.rf_waddr  == addr) & (addr != 5'b0)) forward = w0.rf_wdata;
     else if (c1.valid  & c1.rf_we  &              (c1.rf_waddr  == addr) & (addr != 5'b0)) forward = c1.rf_wdata;
     else if (c0.valid  & c0.rf_we  &              (c0.rf_waddr  == addr) & (addr != 5'b0)) forward = c0.rf_wdata;
     else                                                                                   forward = raw;
@@ -72,16 +67,16 @@ endfunction
 
 wire [31:0] fwd_rj0  = forward(rf_raddr1, rf_rdata1,
                                ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+                               cm_fwd1, cm_fwd0);
 wire [31:0] fwd_rkd0 = forward(rf_raddr2, rf_rdata2,
                                ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+                               cm_fwd1, cm_fwd0);
 wire [31:0] fwd_rj1  = forward(rf_raddr3, rf_rdata3,
                                ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+                               cm_fwd1, cm_fwd0);
 wire [31:0] fwd_rkd1 = forward(rf_raddr4, rf_rdata4,
                                ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               wb_fwd1, wb_fwd0, cm_fwd1, cm_fwd0);
+                               cm_fwd1, cm_fwd0);
 
 function automatic exload_hit(input fwd_bus_t ld, input need, input [4:0] addr);
     exload_hit = ld.valid & ld.rf_we & ld.is_ld & (ld.rf_waddr != 5'b0) &

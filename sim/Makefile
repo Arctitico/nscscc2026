@@ -6,7 +6,7 @@ SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR)/mu
        $(SRC_DIR)/decoder.sv $(SRC_DIR)/regfile.sv \
        $(SRC_DIR)/bpu.sv $(SRC_DIR)/icache.sv $(SRC_DIR)/write_buffer.sv $(SRC_DIR)/dcache.sv \
        $(SRC_DIR)/IF.sv $(SRC_DIR)/ID.sv $(SRC_DIR)/DP.sv \
-       $(SRC_DIR)/IS.sv $(SRC_DIR)/RF.sv $(SRC_DIR)/EX1.sv $(SRC_DIR)/EX2.sv $(SRC_DIR)/WB.sv \
+       $(SRC_DIR)/IS.sv $(SRC_DIR)/RF.sv $(SRC_DIR)/EX1.sv $(SRC_DIR)/EX2.sv \
        $(SRC_DIR)/CM.sv $(SRC_DIR)/mycpu_top.sv
 
 VFLAGS = --binary --timing --top-module tb -o Vtb \
