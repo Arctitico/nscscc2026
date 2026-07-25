@@ -1,6 +1,6 @@
 set project_name Individual_SoC
 set project_path ./project
-set project_part xc7a200tfbg676-1
+set project_part xc7a200tfbg676-2
 
 file delete -force $project_path
 create_project -force $project_name $project_path -part $project_part

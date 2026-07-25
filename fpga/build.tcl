@@ -13,6 +13,7 @@ set sram_write_hold_cycles [lindex $argv 6]
 set jobs       [lindex $argv 7]
 set report_dir [file normalize [lindex $argv 8]]
 set project_file [file normalize ./project/Individual_SoC.xpr]
+set expected_part xc7a200tfbg676-2
 
 proc require_run_complete {run_name phase} {
     set run [get_runs $run_name]
@@ -26,6 +27,12 @@ proc require_run_complete {run_name phase} {
 }
 
 open_project $project_file
+set project_part [get_property PART [current_project]]
+if {$project_part ne $expected_part} {
+    puts stderr "Project part mismatch: expected $expected_part, got $project_part. Re-run build_fpga.sh with --recreate-project."
+    close_project
+    exit 1
+}
 set generics [format \
     "SIMULATION=0 CPU_CLK_HZ=%s PLL_DIVCLK_DIVIDE=%s PLL_CLKFBOUT_MULT=%s PLL_CLKOUT0_DIVIDE=%s SRAM_READ_CYCLES=%s SRAM_WRITE_CYCLES=%s SRAM_WRITE_HOLD_CYCLES=%s" \
     $cpu_hz $pll_divclk $pll_mult $pll_outdiv \
@@ -86,6 +93,7 @@ foreach timing_path $failing_paths {
 
 set summary [open "$report_dir/build_summary.txt" w]
 fconfigure $summary -translation lf
+puts $summary "PROJECT_PART=$project_part"
 puts $summary "CPU_CLK_HZ_GENERIC=$cpu_hz"
 puts $summary "PLL_DIVCLK_DIVIDE=$pll_divclk"
 puts $summary "PLL_CLKFBOUT_MULT=$pll_mult"

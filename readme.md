@@ -39,7 +39,7 @@
 ./build_fpga.sh --freq 90
 ```
 
-脚本以 50 MHz 板载时钟为输入，自动选择合法的 Artix-7 PLL 整数参数，将实际频率同时传给 UART 分频，并把 SRAM 的纳秒要求换算为实际频率下的整数拍数。默认读访问和写脉冲均为 `20 ns`，写后保持固定 `1` 拍；可用 `--sram-read-ns`、`--sram-write-pulse-ns` 和 `--sram-write-hold-cycles` 覆盖。若需要按时间而不是拍数配置保持窗口，也可用 `--sram-write-hold-ns`。纳秒换算均向上取整，绝不会缩短请求的物理时间；`--print-config` 只显示 PLL、拍数和实际时间，不启动 Vivado。
+脚本以官方 CI 相同的 `xc7a200tfbg676-2` 为目标，以 50 MHz 板载时钟为输入，自动选择合法的 Artix-7 PLL 整数参数，将实际频率同时传给 UART 分频，并把 SRAM 的纳秒要求换算为实际频率下的整数拍数。默认读访问和写脉冲均为 `20 ns`，写后保持固定 `1` 拍；可用 `--sram-read-ns`、`--sram-write-pulse-ns` 和 `--sram-write-hold-cycles` 覆盖。若需要按时间而不是拍数配置保持窗口，也可用 `--sram-write-hold-ns`。纳秒换算均向上取整，绝不会缩短请求的物理时间；`--print-config` 只显示 PLL、拍数和实际时间，不启动 Vivado。构建会拒绝复用器件型号不匹配的旧工程；迁移后首次构建应加 `--recreate-project`。
 
 例如 90 MHz 下显式指定当前上板候选配置：
 

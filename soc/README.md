@@ -86,6 +86,6 @@ cd ..
 ./build_fpga.sh --freq 90 --recreate-project
 ```
 
-`fpga/create_project.tcl` 只收集当前 CPU 与直连 SoC 所需模块，不加入 `core_top.sv` 或 `cpu_axi_bridge.sv`。`board_clock.sv` 直接例化 `PLLE2_ADV`，因此也不依赖外部 XCI/DCP。引脚、PLL 生成时钟和 SRAM I/O delay 均由仓内 `fpga/constraints/soc.xdc` 约束。
+`fpga/create_project.tcl` 以官方 CI 相同的 `xc7a200tfbg676-2` 为目标，只收集当前 CPU 与直连 SoC 所需模块，不加入 `core_top.sv` 或 `cpu_axi_bridge.sv`。`board_clock.sv` 直接例化 `PLLE2_ADV`，因此也不依赖外部 XCI/DCP。引脚、PLL 生成时钟和 SRAM I/O delay 均由仓内 `fpga/constraints/soc.xdc` 约束。
 
 当前 90 MHz 基线 STA 为 WNS `+0.194 ns`、TNS `0`、WHS `+0.055 ns`；网站六项全部 100 分。92.5 MHz 只有 `+0.010 ns` 级 setup/hold 裕量，不应作为后续开发基线。
