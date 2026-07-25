@@ -4,6 +4,7 @@
 #   make lint   仅 lint 板级顶层
 #   make uart   连续两字节 UART 物理帧/停止位自检
 #   make sram-timing  SRAM 读/写/写后保持周期参数自检
+#   make write-buffer  四项 FIFO/full-turnover/conflict 定向自检
 #   make supervisor  启动当前 2026 auto kernel 并核对 UART 欢迎字符串
 #   make level1      运行 52 字节/64 项 Fibonacci 第一阶段测试
 #   make clean
@@ -58,6 +59,9 @@ UFLAGS = --binary --timing --top-module tb_uart -o Vtb_uart \
 TFLAGS = --binary --timing --top-module tb_sram_ctrl -o Vtb_sram_ctrl \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
+WBFLAGS = --binary --timing --top-module tb_write_buffer -o Vtb_write_buffer \
+          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
+          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
 PFLAGS = --binary --timing --top-module tb_perf -o Vtb_perf \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
@@ -138,6 +142,10 @@ level1:
 uart:
 	verilator $(UFLAGS) $(SOC_DIR)/uart_phy.sv tb_uart.sv
 	./obj_dir/Vtb_uart
+
+write-buffer:
+	verilator $(WBFLAGS) $(SRC_DIR)/write_buffer.sv tb_write_buffer.sv
+	./obj_dir/Vtb_write_buffer
 
 sram-timing:
 	verilator $(TFLAGS) $(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv

@@ -205,6 +205,8 @@ module tb_perf;
     reg [63:0] occ0_cycles;
     reg [63:0] occ1_cycles;
     reg [63:0] occ2_cycles;
+    reg [63:0] occ3_cycles;
+    reg [63:0] occ4_cycles;
     reg [63:0] push_count;
     reg [63:0] pop_count;
     reg [63:0] same_line_push;
@@ -245,7 +247,7 @@ module tb_perf;
 
     wire wb_push = u_cpu.u_dcache.u_write_buffer.push;
     wire wb_pop  = u_cpu.u_dcache.u_write_buffer.pop;
-    wire [1:0] wb_count = u_cpu.u_dcache.u_write_buffer.count;
+    wire [2:0] wb_count = u_cpu.u_dcache.u_write_buffer.count;
     wire marker_start = u_bridge.u_uart.tx_start &
                         (u_bridge.u_uart.tx_data == 8'h06);
     wire marker_end = u_bridge.u_uart.tx_start &
@@ -271,6 +273,8 @@ module tb_perf;
             occ0_cycles            <= 64'b0;
             occ1_cycles            <= 64'b0;
             occ2_cycles            <= 64'b0;
+            occ3_cycles            <= 64'b0;
+            occ4_cycles            <= 64'b0;
             push_count             <= 64'b0;
             pop_count              <= 64'b0;
             same_line_push         <= 64'b0;
@@ -291,6 +295,8 @@ module tb_perf;
             occ0_cycles            <= 64'b0;
             occ1_cycles            <= 64'b0;
             occ2_cycles            <= 64'b0;
+            occ3_cycles            <= 64'b0;
+            occ4_cycles            <= 64'b0;
             push_count             <= 64'b0;
             pop_count              <= 64'b0;
             same_line_push         <= 64'b0;
@@ -328,9 +334,11 @@ module tb_perf;
             end_wb_stall   <= u_cpu.perf_wb_stall;
         end else if (counting) begin
             case (wb_count)
-            2'd0: occ0_cycles <= occ0_cycles + 64'd1;
-            2'd1: occ1_cycles <= occ1_cycles + 64'd1;
-            default: occ2_cycles <= occ2_cycles + 64'd1;
+            3'd0: occ0_cycles <= occ0_cycles + 64'd1;
+            3'd1: occ1_cycles <= occ1_cycles + 64'd1;
+            3'd2: occ2_cycles <= occ2_cycles + 64'd1;
+            3'd3: occ3_cycles <= occ3_cycles + 64'd1;
+            default: occ4_cycles <= occ4_cycles + 64'd1;
             endcase
             if (wb_push) begin
                 push_count <= push_count + 64'd1;
@@ -503,8 +511,9 @@ module tb_perf;
                  end_cycle - start_cycle, end_wb_stall - start_wb_stall);
         $display("[DIRECT PERF] push=%0d pop=%0d same_line=%0d same_word=%0d",
                  push_count, pop_count, same_line_push, same_word_push);
-        $display("[DIRECT PERF] occ0=%0d occ1=%0d occ2=%0d",
-                 occ0_cycles, occ1_cycles, occ2_cycles);
+        $display("[DIRECT PERF] occ0=%0d occ1=%0d occ2=%0d occ3=%0d occ4=%0d",
+                 occ0_cycles, occ1_cycles, occ2_cycles,
+                 occ3_cycles, occ4_cycles);
         $display("[DIRECT PERF] wr_req_cycles=%0d wr_done=%0d ext_write_active=%0d",
                  data_wr_req_cycles, data_wr_done_count, ext_write_active_cycles);
         $display("[PREFETCH] miss=%0d next=%0d same=%0d other=%0d",
