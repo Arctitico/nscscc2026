@@ -257,13 +257,16 @@ wire [DADDR-1:0]     rd_addr = {rd_idx, rd_word};
 
 reg                  refill_way;
 reg [WORD_BITS-1:0]  refill_cnt;
-wire [DADDR-1:0] refill_addr = {req_idx, refill_cnt};
+// Demand refill starts at the requested word and wraps inside the 16-byte
+// line. refill_cnt is the returned-beat number, not the physical word index.
+wire [WORD_BITS-1:0] refill_word = req_word + refill_cnt;
+wire [DADDR-1:0] refill_addr = {req_idx, refill_word};
 wire refill_fire = (state == S_REFILL) & mem_rd_ok;
 wire refill_last = refill_fire & (refill_cnt == {WORD_BITS{1'b1}});
-// 沿用 2025 D-cache 的 critical-word-first：请求 word 一返回就先让
-// WB 继续，剩余 beat 仍在后台写完整行。WB 正在等待这次响应，
-// 因而可按 SRAM 接口语义消费单拍 data_ok 脉冲。
-wire refill_critical = refill_fire & (refill_cnt == req_word);
+// 首个返回 beat 就是请求 word，先让流水继续；尾部三 beat 仍写完整行，
+// 不重复产生 data_ok。
+wire refill_critical = refill_fire &
+                       (refill_cnt == {WORD_BITS{1'b0}});
 wire victim_way = ~v0_q ? 1'b0 : ~v1_q ? 1'b1 : lru_q;
 
 // ------------------------------ write buffer ------------------------------
@@ -332,7 +335,7 @@ assign mem_rd_req  = demand_mem_rd_req | pf_busy;
 assign mem_rd_size = demand_mem_rd_req ?
                      (refill_req ? 3'b100 : req_size) : 3'b100;
 assign mem_rd_addr = demand_mem_rd_req ?
-                     (refill_req ? {req_addr[31:OFF], {OFF{1'b0}}} : req_addr) :
+                     (refill_req ? {req_addr[31:2], 2'b0} : req_addr) :
                      pf_active_addr;
 
 assign mem_wr_req  = uncached_store | wb_mem_req;

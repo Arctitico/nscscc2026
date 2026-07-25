@@ -4,11 +4,13 @@
 // 把「请求保持到 ok」握手翻译成板上异步 SRAM 时序：
 //   - 单字（len=0）：发起后驱动 addr/ce/oe(读) 或 addr/data/be/ce/we(写) 保持
 //     READ_CYCLES / WRITE_CYCLES 拍，末拍组合给出 ok（读时同拍 rdata 有效）。
-//   - 读突发（len>0，仅取指重填用）：CE/OE 全程拉低，逐字推进 addr，每字访问
+//   - 读突发（len>0，I/D cache line 重填用）：CE/OE 全程拉低，逐字推进
+//     addr，每字访问
 //     READ_CYCLES 拍后给出一个 beat（ok），到第 len 字时 beat_last=1 再回 IDLE。
 //     每字仍有 READ_CYCLES 拍访问时间，时序裕量与单字相同；省掉了字间回 IDLE 的
-//     重启/总线翻转开销，是真正的连读突发。
-//   - 写恒为单字（len=0；本工程只取指走突发、访存单字）。
+//     重启/总线翻转开销。四字 line burst 可从 critical word 开始，地址低两位
+//     在同一 16 B line 内回绕。
+//   - 写恒为单字（len=0）。
 //   - 物理数据线是 inout，三态在板级顶层处理。本模块额外输出 ram_wdrive：
 //     写周期结束、WE# 上升后仍保持地址/字节使能/写数据和数据总线驱动
 //     WRITE_HOLD_CYCLES 拍，
@@ -169,7 +171,11 @@ always @(posedge clk or posedge reset) begin
                 if (!write_r)
                     ram_wdrive <= 1'b0;
             end else if (cnt == 16'd0) begin
-                ram_addr <= ram_addr + 20'd1;           // 连读下一字
+                // 四字 cache-line 读可从 critical word 开始，只递增低两位，
+                // 例如 word3 后回到同一行的 word0，不向相邻行进位。
+                ram_addr <= (!write_r && (len_r == 3'd3))
+                          ? {ram_addr[19:2], ram_addr[1:0] + 2'd1}
+                          : ram_addr + 20'd1;
             end
         end
         default: begin

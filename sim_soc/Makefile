@@ -56,7 +56,7 @@ LFLAGS = --binary --timing --top-module tb_level1 -o Vtb_level1 \
 UFLAGS = --binary --timing --top-module tb_uart -o Vtb_uart \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
-TFLAGS = --binary --timing --top-module tb_sram_ctrl -o Vtb_sram_ctrl \
+TFLAGS = --binary --timing --top-module tb_sram_ctrl \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
 WBFLAGS = --binary --timing --top-module tb_write_buffer -o Vtb_write_buffer \
@@ -148,12 +148,18 @@ write-buffer:
 	./obj_dir/Vtb_write_buffer
 
 sram-timing:
-	verilator $(TFLAGS) $(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv
-	./obj_dir/Vtb_sram_ctrl
-	verilator $(TFLAGS) -o Vtb_sram_ctrl_fast \
+	verilator $(TFLAGS) -o Vtb_sram_ctrl_111 \
 		-GREAD_CYCLES=1 -GWRITE_CYCLES=1 -GWRITE_HOLD_CYCLES=1 \
 		$(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv
-	./obj_dir/Vtb_sram_ctrl_fast
+	./obj_dir/Vtb_sram_ctrl_111
+	verilator $(TFLAGS) -o Vtb_sram_ctrl_221 \
+		-GREAD_CYCLES=2 -GWRITE_CYCLES=2 -GWRITE_HOLD_CYCLES=1 \
+		$(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv
+	./obj_dir/Vtb_sram_ctrl_221
+	verilator $(TFLAGS) -o Vtb_sram_ctrl_331 \
+		-GREAD_CYCLES=3 -GWRITE_CYCLES=3 -GWRITE_HOLD_CYCLES=1 \
+		$(SOC_DIR)/sram_ctrl.sv tb_sram_ctrl.sv
+	./obj_dir/Vtb_sram_ctrl_331
 
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv

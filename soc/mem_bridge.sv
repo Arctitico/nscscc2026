@@ -1,5 +1,5 @@
 // ============================================================================
-// mem_bridge —— CPU（取指突发读口 + 访存单字口）→ 板上 BaseRAM/ExtRAM/UART 桥
+// mem_bridge —— CPU（取指突发读口 + 访存读写口）→ 板上 BaseRAM/ExtRAM/UART 桥
 //
 // 2026 物理地址译码：
 //   0x1c000000-0x1c3fffff = BaseRAM，0x1c400000-0x1c7fffff = ExtRAM；
@@ -9,7 +9,8 @@
 // 取指口：**突发读通道**（icache 整行重填用）
 //   inst_rd_req/inst_rd_addr(行基址) → inst_rd_rdy(被接受) / inst_ret_valid+
 //   inst_ret_data+inst_ret_last(逐字回数，升序)。一次突发读 LINE_WORDS 个字。
-// 访存口：单字「请求保持到 ok」，读/写，可达 UART。
+// 访存口：「请求保持到 ok」，读/写，可达 UART；data_rd_size=3'b100 表示
+//   四字 D-cache line burst，其余读写为单字。
 //
 // 仲裁：BaseRAM/ExtRAM 各一个独立 sram_ctrl，可并行（典型：取指走 Base ∥ 访存走 Ext）。
 //   同片争用时**访存优先**（较老访存先走，取指属投机可等）；一旦某方被授予，sram_ctrl
