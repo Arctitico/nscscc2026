@@ -45,8 +45,11 @@ launch_runs synth_1 -jobs $jobs
 wait_on_run synth_1
 require_run_complete synth_1 Synthesis
 
-set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
-set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
+# Match the official CI implementation flow: keep Vivado's normal pre-route
+# phys_opt_design step, but do not run an additional post-route physical
+# optimization pass.  Set this explicitly because the generated project is
+# reused between builds and may retain the old AggressiveExplore property.
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED false [get_runs impl_1]
 launch_runs impl_1 -to_step write_bitstream -jobs $jobs
 wait_on_run impl_1
 require_run_complete impl_1 Implementation
