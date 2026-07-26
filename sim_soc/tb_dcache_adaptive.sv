@@ -68,18 +68,23 @@ localparam [2:0] S_WAIT_WB   = 3'd2;
 localparam [2:0] S_REFILL    = 3'd3;
 localparam [2:0] S_WORD_READ = 3'd7;
 
-localparam [31:0] PC_WORD  = 32'h1c00_2100;
-localparam [31:0] PC_PROBE = 32'h1c00_2104;
-localparam [31:0] PC_WAIT  = 32'h1c00_2108;
+localparam [31:0] PC_WORD     = 32'h1c00_2100;
+localparam [31:0] PC_PROBE    = 32'h1c00_2104;
+localparam [31:0] PC_WAIT     = 32'h1c00_2108;
+localparam [31:0] PC_COLLIDE  = 32'h1c00_210c;
 
-localparam [31:0] ADDR_WORD  = 32'h1c10_0029;
-localparam [31:0] ADDR_PROBE = 32'h1c12_003c;
-localparam [31:0] ADDR_WAIT  = 32'h1c14_0044;
+localparam [31:0] ADDR_WORD   = 32'h1c10_0029;
+localparam [31:0] ADDR_PROBE  = 32'h1c12_003c;
+localparam [31:0] ADDR_WAIT   = 32'h1c14_0044;
+localparam [31:0] ADDR_COLLIDE = 32'h1c16_0088;
+localparam [31:0] ADDR_DIRECT  = 32'h1c18_0090;
 
 integer cpu_response_count;
 integer refill_beat_count;
 integer word_start_count;
 integer probe_start_count;
+integer mem_read_start_count;
+reg     mem_rd_req_q;
 
 always @(posedge clk) begin
     if (reset) begin
@@ -87,7 +92,10 @@ always @(posedge clk) begin
         refill_beat_count <= 0;
         word_start_count <= 0;
         probe_start_count <= 0;
+        mem_read_start_count <= 0;
+        mem_rd_req_q <= 1'b0;
     end else begin
+        mem_rd_req_q <= mem_rd_req;
         if (cpu_data_ok)
             cpu_response_count <= cpu_response_count + 1;
         if (dut.refill_fire)
@@ -96,6 +104,8 @@ always @(posedge clk) begin
             word_start_count <= word_start_count + 1;
         if (dut.policy_probe_start)
             probe_start_count <= probe_start_count + 1;
+        if (mem_rd_req && !mem_rd_req_q)
+            mem_read_start_count <= mem_read_start_count + 1;
     end
 end
 
@@ -177,6 +187,7 @@ integer responses_before;
 integer refills_before;
 integer word_starts_before;
 integer probe_starts_before;
+integer read_starts_before;
 
 initial begin
     reset = 1'b1;
@@ -262,6 +273,78 @@ initial begin
         dut.data0_mem[probe_set * 4 + 2] != 32'haaaa_0002 ||
         dut.data0_mem[probe_set * 4 + 3] != 32'haaaa_0003)
         $fatal(1, "probe CWF data landed in wrong word slots");
+
+    // candidate 在空槽生成的同拍，若 CPU demand 恰好访问同一 line，
+    // 应过滤这条冗余 prefetch，让 demand 只发起一次完整行读取。
+    responses_before = cpu_response_count;
+    refills_before = refill_beat_count;
+    read_starts_before = mem_read_start_count;
+    @(negedge clk);
+    if (!cpu_addr_ok)
+        $fatal(1, "collision demand issued while dcache not ready");
+    dut.u_prefetcher.predict_s1_valid = 1'b1;
+    dut.u_prefetcher.predict_s1_line = ADDR_COLLIDE[31:4] - 28'd1;
+    dut.u_prefetcher.predict_s1_stride = 28'sd1;
+    cpu_pc = PC_COLLIDE;
+    cpu_addr = ADDR_COLLIDE;
+    cpu_size = 3'b010;
+    cpu_we = 4'b0;
+    cpu_req = 1'b1;
+    #1;
+    if (!dut.pf_candidate_valid ||
+        dut.pf_candidate_addr != {ADDR_COLLIDE[31:4], 4'b0} ||
+        dut.pf_start)
+        $fatal(1, "same-line candidate was not filtered");
+    @(posedge clk);
+    #1;
+    if (dut.state != S_LOOKUP || dut.pf_busy)
+        $fatal(1, "filtered candidate still started a prefetch");
+    @(negedge clk);
+    cpu_req = 1'b0;
+    @(posedge clk);
+    #1;
+    if (dut.state != S_REFILL)
+        $fatal(1, "same-line demand did not start its sole refill");
+    return_read_beat(32'hbbbb_0002, 1'b1);
+    return_read_beat(32'hbbbb_0003, 1'b0);
+    return_read_beat(32'hbbbb_0000, 1'b0);
+    return_read_beat(32'hbbbb_0001, 1'b0);
+    @(posedge clk);
+    #1;
+    if (dut.state != S_IDLE ||
+        cpu_response_count != responses_before + 1 ||
+        refill_beat_count != refills_before + 4 ||
+        mem_read_start_count != read_starts_before + 1)
+        $fatal(1, "candidate/demand same-line transaction counted twice");
+
+    // 同线过滤不能把 candidate 直通整体改成晚一拍。无 demand 时，
+    // 新 candidate 仍必须在产生的同一拍启动一次 prefetch。
+    responses_before = cpu_response_count;
+    read_starts_before = mem_read_start_count;
+    @(negedge clk);
+    dut.u_prefetcher.predict_s1_valid = 1'b1;
+    dut.u_prefetcher.predict_s1_line = ADDR_DIRECT[31:4] - 28'd1;
+    dut.u_prefetcher.predict_s1_stride = 28'sd1;
+    #1;
+    if (!dut.pf_candidate_valid ||
+        dut.pf_candidate_addr != {ADDR_DIRECT[31:4], 4'b0} ||
+        !dut.pf_start)
+        $fatal(1, "ordinary candidate lost same-cycle direct start");
+    @(posedge clk);
+    #1;
+    if (!dut.pf_busy ||
+        dut.pf_active_addr != {ADDR_DIRECT[31:4], 4'b0})
+        $fatal(1, "direct candidate did not start prefetch");
+    return_read_beat(32'hcccc_0000, 1'b0);
+    return_read_beat(32'hcccc_0001, 1'b0);
+    return_read_beat(32'hcccc_0002, 1'b0);
+    return_read_beat(32'hcccc_0003, 1'b0);
+    @(posedge clk);
+    #1;
+    if (dut.pf_busy ||
+        cpu_response_count != responses_before ||
+        mem_read_start_count != read_starts_before + 1)
+        $fatal(1, "direct candidate transaction counters mismatch");
 
     // 同 line store 尚在 WB 时，word-only load 必须停在 WAIT_WB，
     // 不能提前启动或消费 service 计数；写完成后才发出单拍读。

@@ -599,9 +599,18 @@ wire pf_start_window = (state == S_IDLE) | cache_load_hit |
 wire incoming_store_same_chip = cpu_accept && (|cpu_we) &&
                                 (cpu_addr[31:22] ==
                                  pf_candidate_addr[31:22]);
+// 若刚产生的 candidate 与同拍接受的 demand 是同一行，启动 prefetch
+// 会让 demand 锁存到旧的 stream-buffer miss，burst 完成后又重复 refill。
+// 只丢弃这条冗余 candidate；其余 candidate 仍保持当拍直通。
+wire incoming_demand_same_line = cpu_accept && ~(|cpu_we) &&
+                                 (cpu_addr[31:4] ==
+                                  pf_candidate_addr[31:4]);
+wire pf_candidate_drop = pf_candidate_valid &&
+                         incoming_demand_same_line;
 wire pf_start = pf_candidate_valid && ~pf_busy &&
                 ~wb_prefetch_chip_conflict && pf_start_window &&
                 ~incoming_store_same_chip &&
+                ~incoming_demand_same_line &&
                 ~(cpu_req && (cpu_addr[31:23] != 9'h038));
 wire pf_refill_fire = pf_busy && mem_rd_ok;
 wire pf_refill_last = pf_refill_fire & (pf_count == 2'b11);
@@ -630,7 +639,7 @@ dcache_prefetcher u_prefetcher (
     .refill_line    (pf_active_addr[31:4]),
     .candidate_valid(pf_candidate_valid),
     .candidate_addr (pf_candidate_addr),
-    .candidate_take (pf_start),
+    .candidate_take (pf_start | pf_candidate_drop),
     .policy_enter_event(policy_enter_event),
     .policy_exit_hit_event(policy_exit_hit_event),
     .policy_exit_pattern_event(policy_exit_pattern_event)
