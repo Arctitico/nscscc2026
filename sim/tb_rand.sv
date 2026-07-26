@@ -149,6 +149,10 @@ module tb_rand;
     integer late_data_retry_accepts;
     integer late_addr_stall_cycles;
     integer late_addr_store_accepts;
+    integer waw_raw_load_observations;
+    integer waw_raw_mul_observations;
+    integer waw_raw_transfer_opportunities;
+    integer waw_raw_transfers;
     localparam logic [31:0] LATE_ADDR_TARGET = SCRATCH + 32'd32;
     localparam logic [31:0] LATE_ADDR_VALUE  = 32'h0000_05a5;
 
@@ -159,6 +163,38 @@ module tb_rand;
         ((u_cpu.u_RF.db0.is_st & u_cpu.u_RF.rj_pending0) |
          (u_cpu.u_RF.idp.v1 & u_cpu.u_RF.db1.is_st &
           u_cpu.u_RF.rj_pending1));
+
+    // The directed WAW->RAW program puts an unfinished slot0 load/MUL and a
+    // ready slot1 ALU writer of the same register in EX1.  The RF consumer
+    // must follow slot1, the youngest producer, instead of OR-ing slot0's
+    // pending state into its dependency decision.
+    wire waw_raw_ex1_shadow =
+        u_cpu.u_RF.rf_valid &
+        u_cpu.u_RF.db0.need_rj &
+        (u_cpu.u_RF.rf_raddr1 != 5'b0) &
+        u_cpu.ex1_fwd0.valid & u_cpu.ex1_fwd0.rf_we &
+        ~u_cpu.ex1_fwd0.result_ready &
+        (u_cpu.ex1_fwd0.rf_waddr == u_cpu.u_RF.rf_raddr1) &
+        u_cpu.ex1_fwd1.valid & u_cpu.ex1_fwd1.rf_we &
+        u_cpu.ex1_fwd1.result_ready &
+        (u_cpu.ex1_fwd1.rf_waddr == u_cpu.u_RF.rf_raddr1);
+    wire waw_raw_ex2_shadow =
+        u_cpu.u_RF.rf_valid &
+        u_cpu.u_RF.db0.need_rj &
+        (u_cpu.u_RF.rf_raddr1 != 5'b0) &
+        u_cpu.ex2_fwd0.valid & u_cpu.ex2_fwd0.rf_we &
+        ~u_cpu.ex2_fwd0.result_ready &
+        (u_cpu.ex2_fwd0.rf_waddr == u_cpu.u_RF.rf_raddr1) &
+        u_cpu.ex2_fwd1.valid & u_cpu.ex2_fwd1.rf_we &
+        u_cpu.ex2_fwd1.result_ready &
+        (u_cpu.ex2_fwd1.rf_waddr == u_cpu.u_RF.rf_raddr1);
+    wire waw_raw_shadow = waw_raw_ex1_shadow | waw_raw_ex2_shadow;
+    wire waw_raw_load_shadow =
+        (waw_raw_ex1_shadow & u_cpu.u_EX1.s0.is_ld) |
+        (waw_raw_ex2_shadow & u_cpu.u_EX2.s0.is_mem);
+    wire waw_raw_mul_shadow =
+        (waw_raw_ex1_shadow & u_cpu.u_EX1.s0.is_mul) |
+        (waw_raw_ex2_shadow & u_cpu.u_EX2.s0.is_mul);
 
     task automatic check_commit(input [31:0] cpc, input [4:0] cwn, input [31:0] cwd);
         if (tptr >= ncommit) begin
@@ -185,6 +221,10 @@ module tb_rand;
             late_data_retry_accepts = 0;
             late_addr_stall_cycles = 0;
             late_addr_store_accepts = 0;
+            waw_raw_load_observations = 0;
+            waw_raw_mul_observations = 0;
+            waw_raw_transfer_opportunities = 0;
+            waw_raw_transfers = 0;
         end else begin
             if (|debug_wb_rf_we)  check_commit(debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
             if (|debug_wb1_rf_we) check_commit(debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
@@ -253,6 +293,28 @@ module tb_rand;
                     end else begin
                         late_addr_store_accepts =
                             late_addr_store_accepts + 1;
+                    end
+                end
+            end
+            if ($test$plusargs("CHECK_WAW_RAW") && waw_raw_shadow) begin
+                if (waw_raw_load_shadow)
+                    waw_raw_load_observations =
+                        waw_raw_load_observations + 1;
+                if (waw_raw_mul_shadow)
+                    waw_raw_mul_observations =
+                        waw_raw_mul_observations + 1;
+                if (u_cpu.u_RF.rf_dependency_stall) begin
+                    $display("  FAIL younger ready WAW did not hide older pending producer");
+                    errors = errors + 1;
+                end
+                if (u_cpu.EX1_allow_in) begin
+                    waw_raw_transfer_opportunities =
+                        waw_raw_transfer_opportunities + 1;
+                    if (u_cpu.RF_to_EX1_valid)
+                        waw_raw_transfers = waw_raw_transfers + 1;
+                    else begin
+                        $display("  FAIL WAW-shadowed consumer missed an EX1 transfer opportunity");
+                        errors = errors + 1;
                     end
                 end
             end
@@ -360,6 +422,27 @@ module tb_rand;
                          late_data_matches, late_data_direct_accepts,
                          late_data_capture_events, late_data_retry_accepts,
                          late_addr_stall_cycles, late_addr_store_accepts);
+            end
+        end
+        if ($test$plusargs("CHECK_WAW_RAW")) begin
+            if (($test$plusargs("EXPECT_WAW_LOAD") &&
+                 (waw_raw_load_observations < 1)) ||
+                ($test$plusargs("EXPECT_WAW_MUL") &&
+                 (waw_raw_mul_observations < 1)) ||
+                waw_raw_transfer_opportunities < 1 ||
+                waw_raw_transfers != waw_raw_transfer_opportunities) begin
+                $display("  FAIL WAW->RAW load/mul/opportunities/transfers=%0d/%0d/%0d/%0d",
+                         waw_raw_load_observations,
+                         waw_raw_mul_observations,
+                         waw_raw_transfer_opportunities,
+                         waw_raw_transfers);
+                errors = errors + 1;
+            end else begin
+                $display("==== WAW->RAW PASSED: load/mul/opportunities/transfers=%0d/%0d/%0d/%0d ====",
+                         waw_raw_load_observations,
+                         waw_raw_mul_observations,
+                         waw_raw_transfer_opportunities,
+                         waw_raw_transfers);
             end
         end
 

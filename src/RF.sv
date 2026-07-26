@@ -56,66 +56,58 @@ assign rf_raddr2 = db0.src_reg_is_rd ? db0.rd : db0.rk;
 assign rf_raddr3 = db1.rj;
 assign rf_raddr4 = db1.src_reg_is_rd ? db1.rd : db1.rk;
 
-function automatic [31:0] forward(
+// 一次选出实际依赖的最年轻生产者，同时返回其数据和 pending 状态。
+// 返回值 [32] 为 pending，[31:0] 为数据。尚未 ready 时数据不会被普通
+// consumer 锁存；load->store-data 的唯一例外由 EX1 专用完成口接管。
+function automatic [32:0] resolve_operand(
     input [ 4:0] addr,
     input [31:0] raw,
     input fwd_bus_t ex1_s1, input fwd_bus_t ex1_s0,
     input fwd_bus_t ex2_s1, input fwd_bus_t ex2_s0,
     input fwd_bus_t cm_s1, input fwd_bus_t cm_s0
 );
-    if      (ex1_s1.valid & ex1_s1.rf_we & ex1_s1.result_ready & (ex1_s1.rf_waddr == addr) & (addr != 5'b0)) forward = ex1_s1.rf_wdata;
-    else if (ex1_s0.valid & ex1_s0.rf_we & ex1_s0.result_ready & (ex1_s0.rf_waddr == addr) & (addr != 5'b0)) forward = ex1_s0.rf_wdata;
-    else if (ex2_s1.valid & ex2_s1.rf_we & ex2_s1.result_ready & (ex2_s1.rf_waddr == addr) & (addr != 5'b0)) forward = ex2_s1.rf_wdata;
-    else if (ex2_s0.valid & ex2_s0.rf_we & ex2_s0.result_ready & (ex2_s0.rf_waddr == addr) & (addr != 5'b0)) forward = ex2_s0.rf_wdata;
-    else if (cm_s1.valid  & cm_s1.rf_we  & cm_s1.result_ready  & (cm_s1.rf_waddr  == addr) & (addr != 5'b0)) forward = cm_s1.rf_wdata;
-    else if (cm_s0.valid  & cm_s0.rf_we  & cm_s0.result_ready  & (cm_s0.rf_waddr  == addr) & (addr != 5'b0)) forward = cm_s0.rf_wdata;
-    else                                                                                                     forward = raw;
+    if (addr == 5'b0)
+        resolve_operand = {1'b0, raw};
+    else if (ex1_s1.valid & ex1_s1.rf_we & (ex1_s1.rf_waddr == addr))
+        resolve_operand = {~ex1_s1.result_ready, ex1_s1.rf_wdata};
+    else if (ex1_s0.valid & ex1_s0.rf_we & (ex1_s0.rf_waddr == addr))
+        resolve_operand = {~ex1_s0.result_ready, ex1_s0.rf_wdata};
+    else if (ex2_s1.valid & ex2_s1.rf_we & (ex2_s1.rf_waddr == addr))
+        resolve_operand = {~ex2_s1.result_ready, ex2_s1.rf_wdata};
+    else if (ex2_s0.valid & ex2_s0.rf_we & (ex2_s0.rf_waddr == addr))
+        resolve_operand = {~ex2_s0.result_ready, ex2_s0.rf_wdata};
+    else if (cm_s1.valid & cm_s1.rf_we & (cm_s1.rf_waddr == addr))
+        resolve_operand = {~cm_s1.result_ready, cm_s1.rf_wdata};
+    else if (cm_s0.valid & cm_s0.rf_we & (cm_s0.rf_waddr == addr))
+        resolve_operand = {~cm_s0.result_ready, cm_s0.rf_wdata};
+    else
+        resolve_operand = {1'b0, raw};
 endfunction
 
-wire [31:0] fwd_rj0  = forward(rf_raddr1, rf_rdata1,
-                               ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               cm_fwd1, cm_fwd0);
-wire [31:0] fwd_rkd0 = forward(rf_raddr2, rf_rdata2,
-                               ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               cm_fwd1, cm_fwd0);
-wire [31:0] fwd_rj1  = forward(rf_raddr3, rf_rdata3,
-                               ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               cm_fwd1, cm_fwd0);
-wire [31:0] fwd_rkd1 = forward(rf_raddr4, rf_rdata4,
-                               ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
-                               cm_fwd1, cm_fwd0);
+wire [32:0] resolved_rj0 = resolve_operand(
+    rf_raddr1, rf_rdata1, ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
+    cm_fwd1, cm_fwd0);
+wire [32:0] resolved_rkd0 = resolve_operand(
+    rf_raddr2, rf_rdata2, ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
+    cm_fwd1, cm_fwd0);
+wire [32:0] resolved_rj1 = resolve_operand(
+    rf_raddr3, rf_rdata3, ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
+    cm_fwd1, cm_fwd0);
+wire [32:0] resolved_rkd1 = resolve_operand(
+    rf_raddr4, rf_rdata4, ex1_fwd1, ex1_fwd0, ex2_fwd1, ex2_fwd0,
+    cm_fwd1, cm_fwd0);
 
-function automatic pending_producer_hit(
-    input fwd_bus_t producer,
-    input need,
-    input [4:0] addr
-);
-    pending_producer_hit =
-        producer.valid & producer.rf_we & ~producer.result_ready &
-        (producer.rf_waddr != 5'b0) & need & (producer.rf_waddr == addr);
-endfunction
+wire [31:0] fwd_rj0  = resolved_rj0[31:0];
+wire [31:0] fwd_rkd0 = resolved_rkd0[31:0];
+wire [31:0] fwd_rj1  = resolved_rj1[31:0];
+wire [31:0] fwd_rkd1 = resolved_rkd1[31:0];
 
-// 判断哪些源还没准备好
-wire rj_pending0 =
-    pending_producer_hit(ex1_fwd0, db0.need_rj, rf_raddr1) |
-    pending_producer_hit(ex1_fwd1, db0.need_rj, rf_raddr1) |
-    pending_producer_hit(ex2_fwd0, db0.need_rj, rf_raddr1) |
-    pending_producer_hit(ex2_fwd1, db0.need_rj, rf_raddr1);
-wire rk_pending0 =
-    pending_producer_hit(ex1_fwd0, db0.need_rkd, rf_raddr2) |
-    pending_producer_hit(ex1_fwd1, db0.need_rkd, rf_raddr2) |
-    pending_producer_hit(ex2_fwd0, db0.need_rkd, rf_raddr2) |
-    pending_producer_hit(ex2_fwd1, db0.need_rkd, rf_raddr2);
-wire rj_pending1 =
-    pending_producer_hit(ex1_fwd0, db1.need_rj, rf_raddr3) |
-    pending_producer_hit(ex1_fwd1, db1.need_rj, rf_raddr3) |
-    pending_producer_hit(ex2_fwd0, db1.need_rj, rf_raddr3) |
-    pending_producer_hit(ex2_fwd1, db1.need_rj, rf_raddr3);
-wire rk_pending1 =
-    pending_producer_hit(ex1_fwd0, db1.need_rkd, rf_raddr4) |
-    pending_producer_hit(ex1_fwd1, db1.need_rkd, rf_raddr4) |
-    pending_producer_hit(ex2_fwd0, db1.need_rkd, rf_raddr4) |
-    pending_producer_hit(ex2_fwd1, db1.need_rkd, rf_raddr4);
+// 前递与 pending 共享同一次年龄选择。年轻同名写者已经覆盖老写者时，
+// consumer 只依赖年轻写者；不能把老 load/MUL 的未完成状态再 OR 进来。
+wire rj_pending0 = db0.need_rj  & resolved_rj0[32];
+wire rk_pending0 = db0.need_rkd & resolved_rkd0[32];
+wire rj_pending1 = db1.need_rj  & resolved_rj1[32];
+wire rk_pending1 = db1.need_rkd & resolved_rkd1[32];
 
 // 晚旁路只覆盖当前 EX1 中最年轻的同名生产者确为 load 的情况。若 slot1
 // 已有更年轻的同名 ALU 写者，不能误取 slot0 load。

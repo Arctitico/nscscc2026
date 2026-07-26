@@ -29,6 +29,7 @@ lint:
 #       make p1-regress      (FIFO 定向用例 + 高反压/分支随机 DiffTest)
 #       make mul-pipe        (连续 MUL II=1 + RAW/前递定向验证)
 #       make late-bypass     (load->store-data 晚旁路及地址依赖互锁)
+#       make waw-raw         (年轻 ready WAW 覆盖老 pending producer)
 SEED  ?= 1
 N     ?= 120
 MR    ?= 0.30
@@ -52,6 +53,13 @@ late-bypass:
 	python3 fifo_regress.py --case late_bypass >/dev/null
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
 	./obj_dir/Vtb_rand +CHECK_LATE_BYPASS
+
+waw-raw:
+	python3 fifo_regress.py --case waw_raw_load >/dev/null
+	verilator $(RFLAGS) $(SRCS) tb_rand.sv
+	./obj_dir/Vtb_rand +CHECK_WAW_RAW +EXPECT_WAW_LOAD
+	python3 fifo_regress.py --case waw_raw_mul >/dev/null
+	./obj_dir/Vtb_rand +CHECK_WAW_RAW +EXPECT_WAW_MUL
 
 # 编译一次, 循环换 seed 重新生成激励并跑 (COUNT 个种子)
 COUNT ?= 50

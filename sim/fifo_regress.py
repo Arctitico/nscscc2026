@@ -269,6 +269,42 @@ def late_bypass_case():
     return p.resolve()
 
 
+def waw_raw_load_case():
+    """A younger ready WAW must hide an older unfinished load."""
+    p = Program()
+    init_scratch(p)
+    p.addi(2, 0, 3)
+    p.addi(3, 0, 7)
+    p.addi(4, 0, 0x44)
+
+    # ME+N may co-issue.  The slot1 ALU is the architecturally youngest writer
+    # of r5, so the following consumer must not wait for the cold slot0 load.
+    p.load(5, 0)
+    p.addi(5, 0, 0x123)
+    p.addi(6, 5, 1)
+    p.store(6, 0)
+    p.halt()
+    return p.resolve()
+
+
+def waw_raw_mul_case():
+    """A younger ready WAW must hide an older unfinished multiply."""
+    p = Program()
+    init_scratch(p)
+    p.addi(2, 0, 3)
+    p.addi(3, 0, 7)
+    p.addi(4, 0, 0x44)
+
+    # MU+N may co-issue.  The slot1 ALU is the architecturally youngest writer
+    # of r10, so the following consumer must not wait for the slot0 multiply.
+    p.alu("mul.w", 10, 2, 3)
+    p.addi(10, 0, 0x55)
+    p.addi(11, 10, 1)
+    p.store(11, 4)
+    p.halt()
+    return p.resolve()
+
+
 CASES = {
     "compact": compact_case,
     "conflicts": conflicts_case,
@@ -276,6 +312,8 @@ CASES = {
     "mul_pipe": mul_pipe_case,
     "redirect": redirect_case,
     "pressure": pressure_case,
+    "waw_raw_load": waw_raw_load_case,
+    "waw_raw_mul": waw_raw_mul_case,
 }
 
 
