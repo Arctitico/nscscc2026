@@ -267,6 +267,9 @@ initial begin
     // 不能提前启动或消费 service 计数；写完成后才发出单拍读。
     start_request(32'h1c00_2200, ADDR_WAIT, 3'b010,
                   4'b1111, 32'h1234_5678);
+    #1;
+    if (inst_safe)
+        $fatal(1, "accepted store exposed an inst_safe gap before WB enqueue");
     @(posedge clk);
     #1;
     if (dut.state != S_IDLE || !mem_wr_req)

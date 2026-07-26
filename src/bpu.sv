@@ -10,6 +10,7 @@ module bpu #(
 ) (
     input  wire        clk,
     input  wire        reset,
+    input  wire        clear,
 
     // prediction query
     input  wire [31:0] pred_pc0,
@@ -69,7 +70,7 @@ wire [1:0] cnt_next = upd_taken_q ? (cnt_cur == 2'b11 ? 2'b11 : cnt_cur + 2'b01)
                                   : (cnt_cur == 2'b00 ? 2'b00 : cnt_cur - 2'b01);
 
 always @(posedge clk) begin
-    if (reset) begin
+    if (reset | clear) begin
         upd_valid_q <= 1'b0;
     end
     else begin
@@ -84,7 +85,7 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
-    if (reset) begin
+    if (reset | clear) begin
         btb_valid <= '0;
     end
     else if (upd_valid_q) begin

@@ -8,9 +8,12 @@ module icache #(
     input  wire        clk,
     input  wire        reset,
     input  wire        flush,
-    // 数据口写代码区时按地址失效，保证 supervisor A/G 自修改代码可见。
-    input  wire        snoop_valid,
-    input  wire [31:0] snoop_addr,
+    // 自修改代码检测。store 真正被 D-cache 接受时，若目标行已经驻留、
+    // 正在查询/重填，或本拍刚被取指口接受，则通知顶层执行一次全局重取。
+    input  wire        store_valid,
+    input  wire [31:0] store_addr,
+    input  wire        invalidate_all,
+    output wire        selfmod_hit,
 
     input  wire        req,
     input  wire [31:0] addr,
@@ -58,10 +61,6 @@ reg                  refill_flushed;
 reg                  refill_valid_q;
 reg [31:0]           refill_data_q;
 reg                  refill_last_q;
-reg                  snoop_valid_q;
-reg [31:0]           snoop_addr_q;
-wire [IDX_BITS-1:0]  snoop_idx = snoop_addr_q[OFF +: IDX_BITS];
-wire [TAG_BITS-1:0]  snoop_tag = snoop_addr_q[32-TAG_BITS +: TAG_BITS];
 
 // LRU
 reg [NSETS-1:0]      lru;
@@ -78,6 +77,23 @@ assign perf_miss = in_lookup & ~hit & ~flush;
 
 // 接受一次新请求
 wire accept = req & ~flush & ( (state==S_IDLE) | (in_lookup & hit) );
+
+// 这里故意不只看 valid。若 store 与尚未完成的请求/重填同一行，旧数据仍
+// 可能在 store 生效前返回；同样需要让该重填自然排空但禁止最终置 valid。
+// 比较结果只用于顶层事件寄存器及同 bundle 年轻槽的 valid，不进入 I-cache
+// 命中、addr_ok 或外部 SRAM 请求控制路径。
+wire [IDX_BITS-1:0] store_idx = store_addr[OFF +: IDX_BITS];
+wire [TAG_BITS-1:0] store_tag = store_addr[32-TAG_BITS +: TAG_BITS];
+wire store_resident = (valid0[store_idx] &&
+                       (tag0_mem[store_idx] == store_tag)) |
+                      (valid1[store_idx] &&
+                       (tag1_mem[store_idx] == store_tag));
+wire store_active = (state != S_IDLE) &&
+                    (store_addr[31:OFF] == {req_tag, req_idx});
+wire store_accepted_fetch = accept &&
+                            (store_addr[31:OFF] == addr[31:OFF]);
+assign selfmod_hit = store_valid &
+                     (store_resident | store_active | store_accepted_fetch);
 
 // 本拍读 RAM 的地址只由 cache 自身的同步状态决定。空闲或命中时预读入参
 // 地址；若本拍没有真正 accept，读出的数据会被状态/valid 丢弃。这样避免
@@ -157,14 +173,11 @@ always @(posedge clk) begin
     if (reset)                            refill_flushed <= 1'b0;
     else if (in_lookup & ~hit & ~flush)   refill_flushed <= 1'b0;
     else if ((state==S_REQ | state==S_FILL) & flush) refill_flushed <= 1'b1;
-    else if ((state==S_REQ | state==S_FILL) & snoop_valid_q &
-             (snoop_addr_q[31:OFF] == {req_tag, req_idx}))
-        refill_flushed <= 1'b1;
 end
 
 // LRU 只在有效行参与替换，复位后由 valid0/valid1 屏蔽其旧值。
 always @(posedge clk) begin
-    if (refill_last)
+    if (refill_last & ~refill_flushed & ~flush)
         lru[req_idx] <= ~rfl_way;
     else if (in_lookup & hit)
         lru[req_idx] <= ~hit1;
@@ -184,17 +197,6 @@ reg [31:0]         data1_odd [0:NHALF-1];
 reg [31:0]         d0e_q, d0o_q, d1e_q, d1o_q;
 
 reg [NSETS-1:0] valid0, valid1;
-
-// 数据写地址来自 EX 的组合 ALU。先登记一拍再查 tag/清 valid，避免把
-// 第二槽地址计算直接接到 I-cache 分布式 RAM 的写端；连续写仍逐拍捕获。
-// 本核没有 fence.i，测试监控程序在写完代码后才跳转，延迟一拍不改变可见性。
-always @(posedge clk) begin
-    if (reset) snoop_valid_q <= 1'b0;
-    else       snoop_valid_q <= snoop_valid;
-
-    if (snoop_valid)
-        snoop_addr_q <= snoop_addr;
-end
 
 wire we0 = refill_word & (rfl_way == 1'b0);
 wire we1 = refill_word & (rfl_way == 1'b1);
@@ -239,19 +241,13 @@ assign rdata_lo = hit0 ? d0e_q : d1e_q;
 assign rdata_hi = hit0 ? d0o_q : d1o_q;
 
 always @(posedge clk) begin
-    if (reset) begin
+    if (reset | invalidate_all) begin
         valid0 <= '0;
         valid1 <= '0;
     end else begin
-        if (refill_last) begin
+        if (refill_last & ~refill_flushed & ~flush) begin
             if (rfl_way) valid1[req_idx] <= 1'b1;
             else         valid0[req_idx] <= 1'b1;
-        end
-        if (snoop_valid_q) begin
-            if (valid0[snoop_idx] && (tag0_mem[snoop_idx] == snoop_tag))
-                valid0[snoop_idx] <= 1'b0;
-            if (valid1[snoop_idx] && (tag1_mem[snoop_idx] == snoop_tag))
-                valid1[snoop_idx] <= 1'b0;
         end
     end
 end

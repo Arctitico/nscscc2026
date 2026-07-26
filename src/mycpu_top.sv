@@ -77,7 +77,12 @@ wire [31:0] bp_target0, bp_target1;
 
 wire        redirect;
 wire [31:0] redirect_target;
-wire        flush = redirect;
+wire        selfmod_hit;
+reg         selfmod_flush;
+reg  [31:0] selfmod_target;
+wire        flush = redirect | selfmod_flush;
+wire [31:0] flush_target = selfmod_flush ? selfmod_target
+                                         : redirect_target;
 
 wire        bp_upd_en;
 wire [31:0] bp_upd_pc;
@@ -145,8 +150,8 @@ IF u_IF (
     .bp_target0      (bp_target0      ),
     .bp_taken1       (bp_taken1       ),
     .bp_target1      (bp_target1      ),
-    .redirect        (redirect        ),
-    .redirect_target (redirect_target ),
+    .redirect        (flush           ),
+    .redirect_target (flush_target    ),
     .ic_req          (ic_req          ),
     .ic_addr         (ic_addr         ),
     .ic_addr_ok      (ic_addr_ok      ),
@@ -232,6 +237,8 @@ EX1 u_EX1 (
     .clk             (clk               ),
     .reset           (reset             ),
     .flush           (flush             ),
+    .selfmod_flush   (selfmod_flush     ),
+    .selfmod_hit     (selfmod_hit       ),
     .RF_to_EX1_valid (RF_to_EX1_valid   ),
     .EX2_allow_in    (EX2_allow_in      ),
     .EX1_allow_in    (EX1_allow_in      ),
@@ -326,6 +333,7 @@ regfile u_regfile (
 bpu u_bpu (
     .clk          (clk           ),
     .reset        (reset         ),
+    .clear        (selfmod_flush ),
     .pred_pc0     (bp_pc0        ),
     .pred_taken0  (bp_taken0     ),
     .pred_target0 (bp_target0    ),
@@ -370,12 +378,28 @@ dcache u_dcache (
 );
 
 // ============================ 指令缓存 ============================
+wire store_accept = ex_data_sram_en & (|ex_data_sram_we) &
+                    ex_data_addr_ok;
+
+// 命中只在本拍落入事件寄存器，避免 I-cache tag 比较进入正常取指/SRAM
+// 控制路径。目标每拍预先登记；事件发生时登记到的正是该 store 的下一 PC。
+always @(posedge clk) begin
+    if (reset)
+        selfmod_flush <= 1'b0;
+    else
+        selfmod_flush <= selfmod_hit;
+
+    selfmod_target <= ex_data_sram_pc + 32'd4;
+end
+
 icache u_icache (
     .clk            (clk                                  ),
     .reset          (reset                                ),
     .flush          (flush                                ),
-    .snoop_valid    (ex_data_sram_en & (|ex_data_sram_we) ),
-    .snoop_addr     (ex_data_sram_addr                    ),
+    .store_valid    (store_accept                         ),
+    .store_addr     (ex_data_sram_addr                    ),
+    .invalidate_all (selfmod_flush                        ),
+    .selfmod_hit    (selfmod_hit                          ),
     .req            (ic_req                               ),
     .addr           (ic_addr                              ),
     .addr_ok        (ic_addr_ok                           ),

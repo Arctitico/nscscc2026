@@ -11,6 +11,12 @@ module EX1 (
     input  wire               clk,
     input  wire               reset,
     input  wire               flush,
+    // selfmod_flush 比普通分支 flush 晚一拍，此时 EX1 已是年轻 bundle；
+    // 必须阻止它进入 EX2 或发出访存。分支自身的普通 flush 不能接到这里。
+    input  wire               selfmod_flush,
+    // store 接受当拍命中 I-cache 时，若 store 位于 slot0，丢弃同 bundle
+    // 的年轻 slot1；store 位于 slot1 时则保留整个 bundle。
+    input  wire               selfmod_hit,
 
     input  wire               RF_to_EX1_valid,
     input  wire               EX2_allow_in,
@@ -147,14 +153,14 @@ wire [31:0] st_wdata = stb_sel ? {4{rkd_sel[7:0]}} : rkd_sel;
 // 真正完成后原子接收地址与 ex2_load_wdata。不要再用 late_store_match 门控
 // 请求，否则会形成 D-cache tag-hit -> EX2 -> EX1 -> SRAM 控制的长组合链。
 assign data_sram_we    = data_sram_en & st_sel ? st_wstrb : 4'b0;
-assign data_sram_en    = ex1_valid & has_mem & EX2_allow_in;
+assign data_sram_en    = ex1_valid & has_mem & EX2_allow_in & ~selfmod_flush;
 assign data_sram_size  = (stb_sel | (ldw_sel == 4'b0001)) ? 3'b000 : 3'b010;
 assign data_sram_addr  = mem_addr;
 assign data_sram_wdata = st_wdata;
 assign data_sram_pc    = mem_sel1 ? s1.pc : s0.pc;
 
 wire ex1_ready_go = ~has_mem | data_addr_ok;
-assign EX1_to_EX2_valid = ex1_valid & ex1_ready_go;
+assign EX1_to_EX2_valid = ex1_valid & ex1_ready_go & ~selfmod_flush;
 wire ex1_fire = EX1_to_EX2_valid & EX2_allow_in;
 assign EX1_allow_in = ~ex1_valid | ex1_fire;
 
@@ -203,7 +209,7 @@ assign EX1_to_EX2_BUS = '{
           is_mem: is_mem1, addr_lo: mem_addr1[1:0],
           ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
           rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr},
-    v1: ex1_v1 & ~mispred0
+    v1: ex1_v1 & ~mispred0 & ~(selfmod_hit & ~mem_sel1)
 };
 
 wire [31:0] fwd_data0 = (s0.rf_wdata_sel == 2'b10) ? (s0.pc + 32'd4)

@@ -456,8 +456,11 @@ assign perf_miss     = (state == S_LOOKUP) & req_cacheable &
 assign perf_wb_stall = (state == S_LOOKUP) & req_cacheable & req_store &
                        ~wb_enq_ready;
 
-// 当前 EX store 尚未入队时也阻止新的 I-cache miss 越过它。
-assign inst_safe = wb_empty & ~(cpu_req & (|cpu_we));
+// 当前 EX store 尚未入队、以及已经接受但尚未进入写缓冲的 store 都必须
+// 阻止新的 I-cache miss 越过。否则自修改 flush 后可能在 store 真正对外
+// 可见前重填旧指令。
+wire resident_store = (state != S_IDLE) & req_store;
+assign inst_safe = wb_empty & ~(cpu_req & (|cpu_we)) & ~resident_store;
 
 // ------------------------------ memory ports ------------------------------
 wire refill_req      = (state == S_REFILL);

@@ -5,6 +5,8 @@
 #   make uart   连续两字节 UART 物理帧/停止位自检
 #   make sram-timing  SRAM 读/写/写后保持周期参数自检
 #   make write-buffer  四项 FIFO/full-turnover/conflict 定向自检
+#   make icache-selfmod  全清/在途 refill/同拍取指自修改定向自检
+#   make selfmod  CPU 级 store→flush→重取、slot1 精确 kill、BTB 清空自检
 #   make dcache-policy  word-only 冷启动/迟滞/probe/recovery 定向自检
 #   make dcache-adaptive  word-only/probe/WB-wait D-cache 集成自检
 #   make supervisor  启动当前 2026 auto kernel 并核对 UART 欢迎字符串
@@ -64,6 +66,16 @@ TFLAGS = --binary --timing --top-module tb_sram_ctrl \
 WBFLAGS = --binary --timing --top-module tb_write_buffer -o Vtb_write_buffer \
           -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED \
           -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
+ICFLAGS = --binary --timing --top-module tb_icache_selfmod \
+          -o Vtb_icache_selfmod -Wno-WIDTH -Wno-DECLFILENAME \
+          -Wno-UNUSED -Wno-EOFNEWLINE -Wno-WIDTHEXPAND \
+          -Wno-WIDTHTRUNC -Wno-TIMESCALEMOD
+SMFLAGS = --binary --timing --top-module tb_selfmod \
+          -o Vtb_selfmod -Wno-WIDTH -Wno-DECLFILENAME \
+          -Wno-UNUSED -Wno-VARHIDDEN -Wno-EOFNEWLINE \
+          -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
+          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+          -Wno-PINMISSING
 POLICYFLAGS = --binary --timing --top-module tb_dcache_policy \
               -o Vtb_dcache_policy -Wno-WIDTH -Wno-DECLFILENAME \
               -Wno-UNUSED -Wno-EOFNEWLINE -Wno-WIDTHEXPAND \
@@ -157,6 +169,15 @@ write-buffer:
 	verilator $(WBFLAGS) $(SRC_DIR)/write_buffer.sv tb_write_buffer.sv
 	./obj_dir/Vtb_write_buffer
 
+icache-selfmod:
+	verilator $(ICFLAGS) $(SRC_DIR)/icache.sv tb_icache_selfmod.sv
+	./obj_dir/Vtb_icache_selfmod
+
+selfmod:
+	python3 selfmod.py
+	verilator $(SMFLAGS) $(SRCS) tb_selfmod.sv
+	./obj_dir/Vtb_selfmod
+
 dcache-policy:
 	verilator $(POLICYFLAGS) $(SRC_DIR)/write_buffer.sv \
 		$(SRC_DIR)/dcache.sv tb_dcache_policy.sv
@@ -199,4 +220,4 @@ lint:
 	verilator --lint-only --top-module thinpad_top -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND $(SRCS)
 
 clean:
-	rm -rf obj_dir test.hex level1.hex kernel.hex golden_trace.hex golden_mem.hex golden.meta
+	rm -rf obj_dir test.hex selfmod.hex level1.hex kernel.hex golden_trace.hex golden_mem.hex golden.meta
