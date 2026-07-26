@@ -104,8 +104,11 @@ module tb_level1;
             $display("FAIL level1 timeout");
             errors = errors + 1;
         end
-        if (errors == 0) $display("==== LEVEL1 TEST PASSED ====");
-        else             $display("==== LEVEL1 TEST FAILED: %0d errors ====", errors);
-        $finish;
+        if (errors == 0) begin
+            $display("==== LEVEL1 TEST PASSED ====");
+            $finish;
+        end else begin
+            $fatal(1, "==== LEVEL1 TEST FAILED: %0d errors ====", errors);
+        end
     end
 endmodule

@@ -160,8 +160,11 @@ module tb_soc;
         checkmem('h00002, 32'h21,        32'h1c400008);
         checkmem('h00003, 32'hffff_fffb, 32'h1c40000c);
 
-        if (errors == 0) $display("==== SOC TEST PASSED ====");
-        else             $display("==== SOC TEST FAILED: %0d errors ====", errors);
-        $finish;
+        if (errors == 0) begin
+            $display("==== SOC TEST PASSED ====");
+            $finish;
+        end else begin
+            $fatal(1, "==== SOC TEST FAILED: %0d errors ====", errors);
+        end
     end
 endmodule

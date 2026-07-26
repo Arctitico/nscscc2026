@@ -62,7 +62,13 @@ module tb;
     reg        ractive, rline, wactive;
     reg [ 2:0] rbeat;
     reg [31:0] rbase;
-    wire [31:0] rbeat_addr = rbase + (rbeat << 2);
+    // CWF line reads start at the requested word and wrap inside the same
+    // 16-byte line, matching soc/sram_ctrl.sv.  The old linear addition
+    // crossed into the next line whenever the critical word was not word0.
+    wire [1:0] rbeat_word = rbase[3:2] + rbeat[1:0];
+    wire [31:0] rbeat_addr = rline
+                           ? {rbase[31:4], rbeat_word, 2'b00}
+                           : rbase;
     wire rdaccept = data_rd_req & ~ractive;
     wire wraccept = data_wr_req & ~wactive;
     assign data_rd_ok = ractive;
@@ -220,8 +226,11 @@ module tb;
         checkmem(32'h1c400018, 32'd15);
         checkmem(32'h1c40001c, 32'd30);
 
-        if (errors == 0) $display("==== TEST PASSED ====");
-        else             $display("==== TEST FAILED: %0d errors ====", errors);
-        $finish;
+        if (errors == 0) begin
+            $display("==== TEST PASSED ====");
+            $finish;
+        end else begin
+            $fatal(1, "==== TEST FAILED: %0d errors ====", errors);
+        end
     end
 endmodule

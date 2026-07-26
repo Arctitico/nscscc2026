@@ -228,20 +228,32 @@ def mul_pipe_case():
 
 
 def late_bypass_case():
-    """Cover load-to-store-data late bypass and the address-side interlock."""
+    """Cover hit/miss load-to-store-data bypass and the address interlock."""
     p = Program()
     init_scratch(p)
     p.addi(1, 0, 3)
     p.addi(2, 0, 5)
 
+    # A cold word1 miss returns the critical word before the three refill-tail
+    # beats.  The dependent store must capture that one-cycle value while
+    # D-cache rejects its held request, then retry with the sticky payload.
     p.store(1, 4)
     p.load(3, 4)
-    p.store(3, 8)                     # load -> store data: late bypass.
-    p.load(4, 4)
-    # The loaded value is deliberately not a mapped address; the architectural
-    # memory check ignores that store, while the pipeline must still wait for
-    # r4 before issuing it as an address.
-    p.store_base(2, 4, 0)             # load -> store address: must stall.
+    p.store(3, 8)                     # Miss/refill sticky + retry.
+
+    # The line is now resident.  This pair must exercise the cache-hit path
+    # where the load result and dependent store request are accepted together.
+    p.load(11, 4)
+    p.store(11, 12)                   # Hit-side direct late bypass.
+
+    # Store a mapped pointer, miss-load it, then use it as a store address.
+    # A stale base value would still point outside mapped SRAM; the unique
+    # payload plus mapped destination makes both early and missing requests
+    # observable in tb_rand and in the architectural memory image.
+    p.addi(10, 0, 0x5A5)
+    p.store(31, 16)
+    p.load(4, 16)
+    p.store_base(10, 4, 32)           # Address dependency: must stay in RF.
 
     # Keep MUL RAW cases in the same program to verify the conservative
     # interlock still produces the architectural result.

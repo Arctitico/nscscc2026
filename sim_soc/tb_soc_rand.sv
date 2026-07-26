@@ -155,8 +155,11 @@ module tb_soc_rand;
         end
 
         $display("==== checked: commits=%0d/%0d, mem=%0d words ====", tptr, ncommit, nmem);
-        if (errors == 0) $display("==== SOC RAND TEST PASSED ====");
-        else             $display("==== SOC RAND TEST FAILED: %0d errors ====", errors);
-        $finish;
+        if (errors == 0) begin
+            $display("==== SOC RAND TEST PASSED ====");
+            $finish;
+        end else begin
+            $fatal(1, "==== SOC RAND TEST FAILED: %0d errors ====", errors);
+        end
     end
 endmodule

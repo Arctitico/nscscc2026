@@ -63,7 +63,13 @@ module tb_rand;
     reg        ractive, rline, wactive;
     reg [ 2:0] rbeat;
     reg [31:0] rbase;
-    wire [31:0] rbeat_addr = rbase + (rbeat << 2);
+    // CWF line reads start at the requested word and wrap inside the same
+    // 16-byte line, matching soc/sram_ctrl.sv.  The old linear addition
+    // crossed into the next line whenever the critical word was not word0.
+    wire [1:0] rbeat_word = rbase[3:2] + rbeat[1:0];
+    wire [31:0] rbeat_addr = rline
+                           ? {rbase[31:4], rbeat_word, 2'b00}
+                           : rbase;
     wire rdaccept = data_rd_req & ~ractive;
     wire wraccept = data_wr_req & ~wactive;
     assign data_rd_ok = ractive;
@@ -137,7 +143,22 @@ module tb_rand;
     // ---- 锁步比对（同拍按 slot0、slot1 的程序序检查）----
     integer tptr, errors;
     integer mul_accept_streak, max_mul_accept_streak, mul_turnovers;
-    integer late_load_store_hits;
+    integer late_data_matches;
+    integer late_data_direct_accepts;
+    integer late_data_capture_events;
+    integer late_data_retry_accepts;
+    integer late_addr_stall_cycles;
+    integer late_addr_store_accepts;
+    localparam logic [31:0] LATE_ADDR_TARGET = SCRATCH + 32'd32;
+    localparam logic [31:0] LATE_ADDR_VALUE  = 32'h0000_05a5;
+
+    // A store whose address source is still pending must remain in RF.  The
+    // load-to-store-data exception applies only to rkd/store payload.
+    wire late_addr_pending =
+        u_cpu.u_RF.rf_valid &
+        ((u_cpu.u_RF.db0.is_st & u_cpu.u_RF.rj_pending0) |
+         (u_cpu.u_RF.idp.v1 & u_cpu.u_RF.db1.is_st &
+          u_cpu.u_RF.rj_pending1));
 
     task automatic check_commit(input [31:0] cpc, input [4:0] cwn, input [31:0] cwd);
         if (tptr >= ncommit) begin
@@ -158,7 +179,12 @@ module tb_rand;
             mul_accept_streak = 0;
             max_mul_accept_streak = 0;
             mul_turnovers = 0;
-            late_load_store_hits = 0;
+            late_data_matches = 0;
+            late_data_direct_accepts = 0;
+            late_data_capture_events = 0;
+            late_data_retry_accepts = 0;
+            late_addr_stall_cycles = 0;
+            late_addr_store_accepts = 0;
         end else begin
             if (|debug_wb_rf_we)  check_commit(debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
             if (|debug_wb1_rf_we) check_commit(debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
@@ -173,10 +199,63 @@ module tb_rand;
             end else begin
                 mul_accept_streak = 0;
             end
-            if (u_cpu.u_EX1.ex1_valid & u_cpu.u_EX1.late_ready &
-                ((u_cpu.u_EX1.s0.late_store_data) |
-                 (u_cpu.u_EX1.ex1_r.v1 & u_cpu.u_EX1.s1.late_store_data)))
-                late_load_store_hits = late_load_store_hits + 1;
+            if ($test$plusargs("CHECK_LATE_BYPASS")) begin
+                // Match+addr_ok is the cache-hit fast path.  Match without
+                // addr_ok is the critical-word response that must be captured
+                // while the refill tail keeps D-cache busy.
+                if (u_cpu.u_EX1.ex1_valid &
+                    u_cpu.u_EX1.late_store_pending &
+                    u_cpu.u_EX1.late_store_match) begin
+                    late_data_matches = late_data_matches + 1;
+                    if (u_cpu.ex_data_sram_en & u_cpu.ex_data_addr_ok)
+                        late_data_direct_accepts =
+                            late_data_direct_accepts + 1;
+                    else if (u_cpu.ex_data_sram_en &
+                             ~u_cpu.ex_data_addr_ok)
+                        late_data_capture_events =
+                            late_data_capture_events + 1;
+                    else begin
+                        $display("  FAIL late store matched without a held request");
+                        errors = errors + 1;
+                    end
+                end
+
+                if (u_cpu.u_EX1.ex1_valid &
+                    u_cpu.u_EX1.late_store_pending &
+                    u_cpu.u_EX1.late_store_captured &
+                    u_cpu.ex_data_sram_en & u_cpu.ex_data_addr_ok)
+                    late_data_retry_accepts =
+                        late_data_retry_accepts + 1;
+
+                // This is stronger than checking the final address: it proves
+                // the address-dependent store cannot leave RF while rj is
+                // still produced by an unfinished load.
+                if (late_addr_pending) begin
+                    late_addr_stall_cycles = late_addr_stall_cycles + 1;
+                    if (u_cpu.RF_to_EX1_valid) begin
+                        $display("  FAIL address-dependent store left RF before load completion");
+                        errors = errors + 1;
+                    end
+                end
+
+                // The unique payload identifies the address-dependent store.
+                // Require exactly one accepted request at its mapped target;
+                // an early request using stale address zero is now observable.
+                if (u_cpu.store_accept &
+                    ((u_cpu.ex_data_sram_addr == LATE_ADDR_TARGET) |
+                     (u_cpu.ex_data_sram_wdata == LATE_ADDR_VALUE))) begin
+                    if ((u_cpu.ex_data_sram_addr != LATE_ADDR_TARGET) |
+                        (u_cpu.ex_data_sram_wdata != LATE_ADDR_VALUE)) begin
+                        $display("  FAIL address-dependent store addr=%08x data=%08x",
+                                 u_cpu.ex_data_sram_addr,
+                                 u_cpu.ex_data_sram_wdata);
+                        errors = errors + 1;
+                    end else begin
+                        late_addr_store_accepts =
+                            late_addr_store_accepts + 1;
+                    end
+                end
+            end
             if ($test$plusargs("trace_mem") && data_wr_req)
                 $display("[STORE] pc0=%08x pc1=%08x v1=%0b addr=%08x we=%x data=%08x",
                          u_cpu.u_EX2.s0.pc, u_cpu.u_EX2.s1.pc, u_cpu.u_EX2.ex_v1_eff,
@@ -265,19 +344,31 @@ module tb_rand;
             end
         end
         if ($test$plusargs("CHECK_LATE_BYPASS")) begin
-            if (late_load_store_hits < 1) begin
-                $display("  FAIL late bypass load->store=%0d, expected >=1",
-                         late_load_store_hits);
+            if (late_data_matches < 2 ||
+                late_data_direct_accepts < 1 ||
+                late_data_capture_events < 1 ||
+                late_data_retry_accepts < 1 ||
+                late_addr_stall_cycles < 1 ||
+                late_addr_store_accepts != 1) begin
+                $display("  FAIL late bypass match/direct/capture/retry/addr_stall/addr_store=%0d/%0d/%0d/%0d/%0d/%0d",
+                         late_data_matches, late_data_direct_accepts,
+                         late_data_capture_events, late_data_retry_accepts,
+                         late_addr_stall_cycles, late_addr_store_accepts);
                 errors = errors + 1;
             end else begin
-                $display("==== LATE BYPASS PASSED: load->store=%0d ====",
-                         late_load_store_hits);
+                $display("==== LATE BYPASS PASSED: match/direct/capture/retry/addr_stall/addr_store=%0d/%0d/%0d/%0d/%0d/%0d ====",
+                         late_data_matches, late_data_direct_accepts,
+                         late_data_capture_events, late_data_retry_accepts,
+                         late_addr_stall_cycles, late_addr_store_accepts);
             end
         end
 
         $display("==== checked: commits=%0d/%0d, mem=%0d words ====", tptr, ncommit, nmem);
-        if (errors == 0) $display("==== RAND TEST PASSED ====");
-        else             $display("==== RAND TEST FAILED: %0d errors ====", errors);
-        $finish;
+        if (errors == 0) begin
+            $display("==== RAND TEST PASSED ====");
+            $finish;
+        end else begin
+            $fatal(1, "==== RAND TEST FAILED: %0d errors ====", errors);
+        end
     end
 endmodule
