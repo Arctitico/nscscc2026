@@ -79,6 +79,9 @@ typedef struct packed {
     logic [31:0] mul_src1;
     logic [31:0] mul_src2;
     logic [31:0] rkd_value;    // 前递后的第二寄存器值（store 数据 / 分支比较）
+    // 晚旁路只允许 load 结果作为 store data，不参与地址生成。
+    logic        late_store_data;
+    logic [ 4:0] rkd_addr;
     logic        is_mul;
     logic        is_cpucfg;
     // 分支
@@ -164,11 +167,11 @@ typedef struct packed {
 } ex_to_cm_bus_t;
 
 // 每个槽各自向 RF 广播一份前递信息。年轻槽优先级高于年长槽。
-// EX1/EX2 用 is_ld 表示结果尚不可消费；CM 中的数据均已完成。
+// result_ready=1 表示 rf_wdata 当前可以消费；load/MUL 等尚未完成时为 0。
 typedef struct packed {
     logic        valid;
     logic        rf_we;
-    logic        is_ld;        // EX 可置 1；CM 恒 0
+    logic        result_ready;
     logic [ 4:0] rf_waddr;
     logic [31:0] rf_wdata;
 } fwd_bus_t;

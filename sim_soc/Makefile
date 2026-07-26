@@ -77,7 +77,7 @@ PFLAGS = --binary --timing --top-module tb_perf -o Vtb_perf \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
 PERF_PROFILES = dcache_prefetch_profile.sv dcache_pc_trace.sv \
-                issue_compaction_profile.sv
+                issue_compaction_profile.sv late_bypass_profile.sv
 DTRACE ?=
 
 SUPERVISOR_BUILD ?= ../../nscscc-solo-la-soc/sdk/software/examples/supervisor/build

@@ -1,10 +1,10 @@
 // ============================================================================
 // mycpu_top 
 //
-// 九级流水：IF → ID → DP → IS → RF → EX1 → EX2 → WB → CM
-//          取指 译码 分发 发射 读寄存器 计算   完成  写回 提交
+// 八级流水：IF → ID → DP → IS → RF → EX1 → EX2 → CM
+//          取指 译码 分发 发射 读寄存器 计算 完成 提交
 //
-// 当前为两槽顺序双发射；DP 是三项非直通 FIFO，用于切断背压路径。
+// 顺序双发射
 // ============================================================================
 import cpu_pkg::*;
 
@@ -88,6 +88,10 @@ wire [31:0] bp_upd_target;
 fwd_bus_t ex1_fwd0, ex1_fwd1;
 fwd_bus_t ex2_fwd0, ex2_fwd1;
 fwd_bus_t cm_fwd0, cm_fwd1;
+wire ex1_is_load0, ex1_is_load1;
+wire ex2_load_valid;
+wire [4:0] ex2_load_waddr;
+wire [31:0] ex2_load_wdata;
 
 wire [ 4:0] rf_raddr1, rf_raddr2, rf_raddr3, rf_raddr4;
 wire [31:0] rf_rdata1, rf_rdata2, rf_rdata3, rf_rdata4;
@@ -197,75 +201,86 @@ IS u_IS (
 );
 
 RF u_RF (
-    .clk           (clk           ),
-    .reset         (reset         ),
-    .flush         (flush         ),
-    .IS_to_RF_valid(IS_to_RF_valid),
-    .EX1_allow_in  (EX1_allow_in  ),
-    .RF_allow_in   (RF_allow_in   ),
+    .clk           (clk            ),
+    .reset         (reset          ),
+    .flush         (flush          ),
+    .IS_to_RF_valid(IS_to_RF_valid ),
+    .EX1_allow_in  (EX1_allow_in   ),
+    .RF_allow_in   (RF_allow_in    ),
     .RF_to_EX_valid(RF_to_EX1_valid),
-    .IS_to_RF_BUS  (IS_to_RF_BUS  ),
-    .RF_to_EX_BUS  (RF_to_EX1_BUS ),
-    .rf_raddr1     (rf_raddr1     ),
-    .rf_raddr2     (rf_raddr2     ),
-    .rf_raddr3     (rf_raddr3     ),
-    .rf_raddr4     (rf_raddr4     ),
-    .rf_rdata1     (rf_rdata1     ),
-    .rf_rdata2     (rf_rdata2     ),
-    .rf_rdata3     (rf_rdata3     ),
-    .rf_rdata4     (rf_rdata4     ),
-    .ex1_fwd0      (ex1_fwd0      ),
-    .ex1_fwd1      (ex1_fwd1      ),
-    .ex2_fwd0      (ex2_fwd0      ),
-    .ex2_fwd1      (ex2_fwd1      ),
-    .cm_fwd0       (cm_fwd0       ),
-    .cm_fwd1       (cm_fwd1       )
+    .IS_to_RF_BUS  (IS_to_RF_BUS   ),
+    .RF_to_EX_BUS  (RF_to_EX1_BUS  ),
+    .rf_raddr1     (rf_raddr1      ),
+    .rf_raddr2     (rf_raddr2      ),
+    .rf_raddr3     (rf_raddr3      ),
+    .rf_raddr4     (rf_raddr4      ),
+    .rf_rdata1     (rf_rdata1      ),
+    .rf_rdata2     (rf_rdata2      ),
+    .rf_rdata3     (rf_rdata3      ),
+    .rf_rdata4     (rf_rdata4      ),
+    .ex1_fwd0      (ex1_fwd0       ),
+    .ex1_fwd1      (ex1_fwd1       ),
+    .ex1_is_load0  (ex1_is_load0   ),
+    .ex1_is_load1  (ex1_is_load1   ),
+    .ex2_fwd0      (ex2_fwd0       ),
+    .ex2_fwd1      (ex2_fwd1       ),
+    .cm_fwd0       (cm_fwd0        ),
+    .cm_fwd1       (cm_fwd1        )
 );
 
 EX1 u_EX1 (
-    .clk            (clk            ),
-    .reset          (reset          ),
-    .flush          (flush          ),
-    .RF_to_EX1_valid(RF_to_EX1_valid),
-    .EX2_allow_in   (EX2_allow_in   ),
-    .EX1_allow_in   (EX1_allow_in   ),
-    .EX1_to_EX2_valid(EX1_to_EX2_valid),
-    .RF_to_EX1_BUS  (RF_to_EX1_BUS  ),
-    .EX1_to_EX2_BUS (EX1_to_EX2_BUS ),
-    .redirect       (redirect       ),
-    .redirect_target(redirect_target),
-    .bp_upd_en      (bp_upd_en      ),
-    .bp_upd_pc      (bp_upd_pc      ),
-    .bp_upd_taken   (bp_upd_taken   ),
-    .bp_upd_is_cond (bp_upd_is_cond ),
-    .bp_upd_target  (bp_upd_target  ),
-    .ex1_fwd0       (ex1_fwd0       ),
-    .ex1_fwd1       (ex1_fwd1       ),
-    .data_sram_en   (ex_data_sram_en   ),
-    .data_sram_we   (ex_data_sram_we   ),
-    .data_sram_size (ex_data_sram_size ),
-    .data_sram_addr (ex_data_sram_addr ),
-    .data_sram_wdata(ex_data_sram_wdata),
-    .data_sram_pc   (ex_data_sram_pc   ),
-    .data_addr_ok   (ex_data_addr_ok     ),
+    .clk             (clk               ),
+    .reset           (reset             ),
+    .flush           (flush             ),
+    .RF_to_EX1_valid (RF_to_EX1_valid   ),
+    .EX2_allow_in    (EX2_allow_in      ),
+    .EX1_allow_in    (EX1_allow_in      ),
+    .EX1_to_EX2_valid(EX1_to_EX2_valid  ),
+    .RF_to_EX1_BUS   (RF_to_EX1_BUS     ),
+    .EX1_to_EX2_BUS  (EX1_to_EX2_BUS    ),
+    .redirect        (redirect          ),
+    .redirect_target (redirect_target   ),
+    .bp_upd_en       (bp_upd_en         ),
+    .bp_upd_pc       (bp_upd_pc         ),
+    .bp_upd_taken    (bp_upd_taken      ),
+    .bp_upd_is_cond  (bp_upd_is_cond    ),
+    .bp_upd_target   (bp_upd_target     ),
+    .ex1_fwd0        (ex1_fwd0          ),
+    .ex1_fwd1        (ex1_fwd1          ),
+    .ex1_is_load0    (ex1_is_load0      ),
+    .ex1_is_load1    (ex1_is_load1      ),
+    .ex2_load_valid  (ex2_load_valid    ),
+    .ex2_load_waddr  (ex2_load_waddr    ),
+    .ex2_load_wdata  (ex2_load_wdata    ),
+    .data_sram_en    (ex_data_sram_en   ),
+    .data_sram_we    (ex_data_sram_we   ),
+    .data_sram_size  (ex_data_sram_size ),
+    .data_sram_addr  (ex_data_sram_addr ),
+    .data_sram_wdata (ex_data_sram_wdata),
+    .data_sram_pc    (ex_data_sram_pc   ),
+    .data_addr_ok    (ex_data_addr_ok   ),
 
     .perf_data_wait      (perf_ex_addr_wait_event   ),
     .perf_branch_mispred (perf_branch_mispred_event )
 );
 
 EX2 u_EX2 (
-    .clk              (clk                    ),
-    .reset            (reset                  ),
-    .EX1_to_EX2_valid (EX1_to_EX2_valid       ),
-    .CM_allow_in      (CM_allow_in            ),
-    .EX2_allow_in     (EX2_allow_in           ),
-    .EX2_to_CM_valid  (EX2_to_CM_valid        ),
-    .EX1_to_EX2_BUS   (EX1_to_EX2_BUS         ),
-    .EX2_to_CM_BUS    (EX2_to_CM_BUS          ),
-    .ex2_fwd0         (ex2_fwd0               ),
-    .ex2_fwd1         (ex2_fwd1               ),
-    .data_sram_rdata  (ex_data_sram_rdata     ),
-    .data_ok          (ex_data_ok              ),
+    .clk              (clk                ),
+    .reset            (reset              ),
+    .EX1_to_EX2_valid (EX1_to_EX2_valid   ),
+    .CM_allow_in      (CM_allow_in        ),
+    .EX2_allow_in     (EX2_allow_in       ),
+    .EX2_to_CM_valid  (EX2_to_CM_valid    ),
+    .EX1_to_EX2_BUS   (EX1_to_EX2_BUS     ),
+    .EX2_to_CM_BUS    (EX2_to_CM_BUS      ),
+    .ex2_fwd0         (ex2_fwd0           ),
+    .ex2_fwd1         (ex2_fwd1           ),
+    .ex2_load_valid   (ex2_load_valid     ),
+    .ex2_load_waddr   (ex2_load_waddr     ),
+    .ex2_load_wdata   (ex2_load_wdata     ),
+    .data_sram_rdata  (ex_data_sram_rdata ),
+    .data_ok          (ex_data_ok         ),
+
     .perf_data_wait   (perf_ex2_data_wait_event),
     .perf_mul_wait    (perf_mul_wait_event     )
 );
@@ -348,6 +363,7 @@ dcache u_dcache (
     .mem_wr_data  (data_wr_data          ),
     .mem_wr_ok    (data_wr_ok            ),
     .inst_safe    (dcache_inst_safe      ),
+
     .perf_hit     (perf_dcache_hit_event ),
     .perf_miss    (perf_dcache_miss_event),
     .perf_wb_stall(perf_wb_stall_event   )
@@ -355,25 +371,25 @@ dcache u_dcache (
 
 // ============================ 指令缓存 ============================
 icache u_icache (
-    .clk            (clk                                    ),
-    .reset          (reset                                  ),
-    .flush          (flush                                  ),
-    .snoop_valid    (ex_data_sram_en & (|ex_data_sram_we)   ),
-    .snoop_addr     (ex_data_sram_addr                      ),
-    .req            (ic_req                                 ),
-    .addr           (ic_addr                                ),
-    .addr_ok        (ic_addr_ok                             ),
-    .data_ok        (ic_data_ok                             ),
-    .rdata_lo       (ic_rdata_lo                            ),
-    .rdata_hi       (ic_rdata_hi                            ),
-    .inst_rd_req    (ic_mem_rd_req                          ),
-    .inst_rd_addr   (inst_rd_addr                           ),
-    .inst_rd_rdy    (inst_rd_rdy & dcache_inst_safe         ),
-    .inst_ret_valid (inst_ret_valid                         ),
-    .inst_ret_data  (inst_ret_data                          ),
-    .inst_ret_last  (inst_ret_last                          ),
+    .clk            (clk                                  ),
+    .reset          (reset                                ),
+    .flush          (flush                                ),
+    .snoop_valid    (ex_data_sram_en & (|ex_data_sram_we) ),
+    .snoop_addr     (ex_data_sram_addr                    ),
+    .req            (ic_req                               ),
+    .addr           (ic_addr                              ),
+    .addr_ok        (ic_addr_ok                           ),
+    .data_ok        (ic_data_ok                           ),
+    .rdata_lo       (ic_rdata_lo                          ),
+    .rdata_hi       (ic_rdata_hi                          ),
+    .inst_rd_req    (ic_mem_rd_req                        ),
+    .inst_rd_addr   (inst_rd_addr                         ),
+    .inst_rd_rdy    (inst_rd_rdy & dcache_inst_safe       ),
+    .inst_ret_valid (inst_ret_valid                       ),
+    .inst_ret_data  (inst_ret_data                        ),
+    .inst_ret_last  (inst_ret_last                        ),
 
-    .perf_miss      (perf_icache_miss_event                 )
+    .perf_miss      (perf_icache_miss_event               )
 );
 
 // 写缓冲中的 store 必须先对外可见，随后才能让新的指令 miss 越过它。

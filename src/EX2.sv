@@ -21,6 +21,9 @@ module EX2 (
 
     output fwd_bus_t          ex2_fwd0,
     output fwd_bus_t          ex2_fwd1,
+    output wire               ex2_load_valid,
+    output wire   [ 4:0]      ex2_load_waddr,
+    output wire   [31:0]      ex2_load_wdata,
 
     input  wire   [31:0]      data_sram_rdata,
     input  wire               data_ok,
@@ -178,14 +181,21 @@ assign EX2_to_CM_BUS = '{
 
 assign ex2_fwd0 = '{valid: ex2_v0,
                     rf_we: s0.rf_we,
-                    is_ld: (s0.is_mem & ~mem_complete) |
-                           (s0.is_mul & ~mul_complete),
+                    result_ready: ~((s0.is_mem & ~mem_complete) |
+                                    (s0.is_mul & ~mul_complete)),
                     rf_waddr: s0.rf_waddr, rf_wdata: rf_wdata0};
 assign ex2_fwd1 = '{valid: ex2_v1,
                     rf_we: s1.rf_we,
-                    is_ld: (s1.is_mem & ~mem_complete) |
-                           (s1.is_mul & ~mul_complete),
+                    result_ready: ~((s1.is_mem & ~mem_complete) |
+                                    (s1.is_mul & ~mul_complete)),
                     rf_waddr: s1.rf_waddr, rf_wdata: rf_wdata1};
+
+wire ex2_load0 = ex2_v0 & s0.is_mem & s0.rf_we;
+wire ex2_load1 = ex2_v1 & s1.is_mem & s1.rf_we;
+
+assign ex2_load_valid = mem_complete & (ex2_load0 | ex2_load1);
+assign ex2_load_waddr = ex2_load1 ? s1.rf_waddr : s0.rf_waddr;
+assign ex2_load_wdata = ex2_load1 ? rf_wdata1 : rf_wdata0;
 
 assign perf_data_wait = ex2_valid & ex2_has_mem & ~mem_complete;
 assign perf_mul_wait  = ex2_valid & ex2_has_mul & ~mul_complete;

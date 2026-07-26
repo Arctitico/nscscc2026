@@ -57,9 +57,9 @@ assign rf_we2    = {4{do_write1}};
 assign rf_waddr2 = cm_r.s1.rf_waddr;
 assign rf_wdata2 = cm_r.s1.rf_wdata;
 
-assign cm_fwd0 = '{valid: cm_valid, rf_we: cm_r.s0.rf_we, is_ld: 1'b0,
+assign cm_fwd0 = '{valid: cm_valid, rf_we: cm_r.s0.rf_we, result_ready: 1'b1,
                    rf_waddr: cm_r.s0.rf_waddr, rf_wdata: cm_r.s0.rf_wdata};
-assign cm_fwd1 = '{valid: cm_valid & cm_r.v1, rf_we: cm_r.s1.rf_we, is_ld: 1'b0,
+assign cm_fwd1 = '{valid: cm_valid & cm_r.v1, rf_we: cm_r.s1.rf_we, result_ready: 1'b1,
                    rf_waddr: cm_r.s1.rf_waddr, rf_wdata: cm_r.s1.rf_wdata};
 
 assign debug_wb_pc        = cm_r.s0.pc;

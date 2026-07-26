@@ -211,9 +211,12 @@ wire predicted_duplicate =
     (buffer_valid[1] && buffer_line1 == predicted_line) |
     (refill_busy && refill_line == predicted_line) |
     (candidate_valid_r && candidate_line_r == predicted_line);
-wire candidate_slot_ready = ~candidate_valid_r | candidate_take;
-wire candidate_push = predict_s1_valid && predicted_cacheable &&
-                      ~predicted_duplicate && candidate_slot_ready;
+wire candidate_eligible = predict_s1_valid && predicted_cacheable &&
+                          ~predicted_duplicate;
+wire candidate_push_empty = candidate_eligible & ~candidate_valid_r;
+wire candidate_push_replace = candidate_eligible & candidate_valid_r &
+                              candidate_take;
+wire candidate_push = candidate_push_empty | candidate_push_replace;
 
 always @(posedge clk) begin
     if (reset) begin
@@ -221,15 +224,19 @@ always @(posedge clk) begin
     end else begin
         if (candidate_take)
             candidate_valid_r <= 1'b0;
-        if (candidate_push) begin
+        // 空 slot 上新生成的 candidate 可被 D-cache 当拍直接消费，无需
+        // 再保存一份；若本拍同时消费旧 candidate，则把新项接替进去。
+        if (candidate_push_replace |
+            (candidate_push_empty & ~candidate_take)) begin
             candidate_valid_r <= 1'b1;
             candidate_line_r <= predicted_line;
         end
     end
 end
 
-assign candidate_valid = candidate_valid_r;
-assign candidate_addr = {candidate_line_r, 4'b0};
+assign candidate_valid = candidate_valid_r | candidate_push_empty;
+assign candidate_addr = candidate_valid_r ? {candidate_line_r, 4'b0}
+                                           : {predicted_line, 4'b0};
 
 endmodule
 
@@ -576,7 +583,16 @@ wire policy_enter_event;
 wire policy_exit_hit_event;
 wire policy_exit_pattern_event;
 
-wire pf_start_window = (state == S_IDLE) | cache_load_hit;
+// load->store-data 晚旁路会在当前 load hit 的同拍接收 store。其 LOOKUP
+// 下一拍恰好也是 stride predictor 的下一个 candidate 到达的时刻；若只
+// 允许 IDLE/load-hit 启动，顺序流的预取会晚一拍并退化为隔行 miss。
+// 当前 store 与 candidate 位于不同 SRAM 芯片时，可在 store 入 WB 的
+// 同拍启动预取；同片冲突仍由这里及 WB 的完整队列查询共同阻止。
+wire completing_store_same_chip =
+    cache_store_finish &&
+    (req_addr[31:22] == pf_candidate_addr[31:22]);
+wire pf_start_window = (state == S_IDLE) | cache_load_hit |
+                       (cache_store_finish & ~completing_store_same_chip);
 wire incoming_store_same_chip = cpu_accept && (|cpu_we) &&
                                 (cpu_addr[31:22] ==
                                  pf_candidate_addr[31:22]);

@@ -46,6 +46,9 @@ class Program:
     def store(self, rd, offset):
         self.emit(enc_2ri12(OP_12["st.w"], rd, 31, offset))
 
+    def store_base(self, rd, rj, offset):
+        self.emit(enc_2ri12(OP_12["st.w"], rd, rj, offset))
+
     def branch(self, op, label, rj=0, rd=0):
         self.fixups.append((len(self.words), op, label, rj, rd))
         self.emit(0)
@@ -224,9 +227,40 @@ def mul_pipe_case():
     return p.resolve()
 
 
+def late_bypass_case():
+    """Cover load-to-store-data late bypass and the address-side interlock."""
+    p = Program()
+    init_scratch(p)
+    p.addi(1, 0, 3)
+    p.addi(2, 0, 5)
+
+    p.store(1, 4)
+    p.load(3, 4)
+    p.store(3, 8)                     # load -> store data: late bypass.
+    p.load(4, 4)
+    # The loaded value is deliberately not a mapped address; the architectural
+    # memory check ignores that store, while the pipeline must still wait for
+    # r4 before issuing it as an address.
+    p.store_base(2, 4, 0)             # load -> store address: must stall.
+
+    # Keep MUL RAW cases in the same program to verify the conservative
+    # interlock still produces the architectural result.
+    p.alu("mul.w", 5, 1, 2)
+    p.addi(20, 20, 1)
+    p.alu("add.w", 6, 5, 1)           # MUL -> ALU src1.
+    p.alu("mul.w", 7, 2, 1)
+    p.addi(21, 21, 1)
+    p.alu("sub.w", 8, 2, 7)           # MUL -> ALU src2.
+    p.store(6, 16)
+    p.store(8, 20)
+    p.halt()
+    return p.resolve()
+
+
 CASES = {
     "compact": compact_case,
     "conflicts": conflicts_case,
+    "late_bypass": late_bypass_case,
     "mul_pipe": mul_pipe_case,
     "redirect": redirect_case,
     "pressure": pressure_case,

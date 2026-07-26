@@ -31,6 +31,11 @@ module EX1 (
 
     output fwd_bus_t          ex1_fwd0,
     output fwd_bus_t          ex1_fwd1,
+    output wire               ex1_is_load0,
+    output wire               ex1_is_load1,
+    input  wire               ex2_load_valid,
+    input  wire   [ 4:0]      ex2_load_waddr,
+    input  wire   [31:0]      ex2_load_wdata,
 
     output wire               data_sram_en,
     output wire   [ 3:0]      data_sram_we,
@@ -54,6 +59,23 @@ assign s1 = ex1_r.s1;
 
 wire ex1_v0 = ex1_valid;
 wire ex1_v1 = ex1_valid & ex1_r.v1;
+
+// 每个 bundle 最多一条访存，因此 late store 也最多一条。用一份专用 sticky
+// 数据替代对两槽 ex1_r.rkd_value 的 partial update，避免为 64-bit payload
+// 生成额外 CE/mux，并物理切断通用 EX2 前递总线。
+wire late_store_sel1 = ex1_r.v1 & s1.late_store_data;
+wire late_store_pending = s0.late_store_data | late_store_sel1;
+wire [4:0] late_store_addr = late_store_sel1 ? s1.rkd_addr : s0.rkd_addr;
+wire late_store_match = ex2_load_valid &
+                        (ex2_load_waddr != 5'b0) &
+                        (ex2_load_waddr == late_store_addr);
+reg         late_store_captured;
+reg  [31:0] late_store_value;
+// 保留为仿真可观测信号；不再门控请求/流水握手。
+wire late_ready = ~late_store_pending | late_store_captured |
+                  late_store_match;
+wire [31:0] late_value_now = late_store_captured ? late_store_value
+                                                  : ex2_load_wdata;
 
 wire [31:0] alu_result0;
 wire [31:0] alu_result1;
@@ -111,15 +133,21 @@ wire [31:0] mem_addr = mem_sel1 ? mem_addr1 : mem_addr0;
 wire        st_sel   = mem_sel1 ? s1.is_st : s0.is_st;
 wire        stb_sel  = mem_sel1 ? s1.is_st_b : s0.is_st_b;
 wire [ 3:0] ldw_sel  = mem_sel1 ? s1.ld_width : s0.ld_width;
-wire [31:0] rkd_sel  = mem_sel1 ? s1.rkd_value : s0.rkd_value;
+wire [31:0] rkd_sel_base = mem_sel1 ? s1.rkd_value : s0.rkd_value;
+wire [31:0] rkd_sel  = late_store_pending ? late_value_now : rkd_sel_base;
 
 wire [ 3:0] st_wstrb = stb_sel ? (4'b0001 << mem_addr[1:0]) : 4'b1111;
 wire [31:0] st_wdata = stb_sel ? {4{rkd_sel[7:0]}} : rkd_sel;
 
 // 请求只在 EX2 能原子接收本 bundle 时出现；addr_ok 的同一边沿将 bundle
 // 锁存进 EX2，所以下一拍不会重复请求。
-assign data_sram_en    = ex1_valid & has_mem & EX2_allow_in;
+//
+// late store 在 RF 已确认其生产者是紧邻的 EX1 load；store 到达本级时，
+// 该 load 必在 EX2。可以提前保持请求有效，由 D-cache 的 addr_ok 在 load
+// 真正完成后原子接收地址与 ex2_load_wdata。不要再用 late_store_match 门控
+// 请求，否则会形成 D-cache tag-hit -> EX2 -> EX1 -> SRAM 控制的长组合链。
 assign data_sram_we    = data_sram_en & st_sel ? st_wstrb : 4'b0;
+assign data_sram_en    = ex1_valid & has_mem & EX2_allow_in;
 assign data_sram_size  = (stb_sel | (ldw_sel == 4'b0001)) ? 3'b000 : 3'b010;
 assign data_sram_addr  = mem_addr;
 assign data_sram_wdata = st_wdata;
@@ -131,7 +159,7 @@ wire ex1_fire = EX1_to_EX2_valid & EX2_allow_in;
 assign EX1_allow_in = ~ex1_valid | ex1_fire;
 
 assign redirect = branch_mispred & ex1_fire;
-assign perf_data_wait = ex1_valid & has_mem & EX2_allow_in & ~data_addr_ok;
+assign perf_data_wait = data_sram_en & ~data_addr_ok;
 assign perf_branch_mispred = redirect;
 
 assign bp_upd_en      = ex1_fire &
@@ -151,6 +179,17 @@ always @(posedge clk) begin
     // EX1 空闲/前进时即更新 payload；valid=0 时内容无关。不要把
     // RF_to_EX1_valid（含 load-use/forwarding 判定）串到整条大总线的 CE。
     if (EX1_allow_in) ex1_r <= RF_to_EX1_BUS;
+end
+
+always @(posedge clk) begin
+    if (reset | flush)
+        late_store_captured <= 1'b0;
+    else if (EX1_allow_in)
+        late_store_captured <= 1'b0;
+    else if (late_store_pending & late_store_match) begin
+        late_store_captured <= 1'b1;
+        late_store_value <= ex2_load_wdata;
+    end
 end
 
 assign EX1_to_EX2_BUS = '{
@@ -173,11 +212,14 @@ wire [31:0] fwd_data1 = (s1.rf_wdata_sel == 2'b10) ? (s1.pc + 32'd4)
                                                      : base_result1;
 
 assign ex1_fwd0 = '{valid: ex1_v0, rf_we: s0.rf_we,
-                    is_ld: s0.is_ld | s0.is_mul,
+                    result_ready: ~(s0.is_ld | s0.is_mul),
                     rf_waddr: s0.rf_waddr, rf_wdata: fwd_data0};
 // slot0 分支配对的年轻结果等到 EX2 才可见，避免分支比较进入 RF 旁路。
 assign ex1_fwd1 = '{valid: ex1_v1, rf_we: s1.rf_we,
-                    is_ld: s1.is_ld | s1.is_mul | s0.is_branch,
+                    result_ready: ~(s1.is_ld | s1.is_mul | s0.is_branch),
                     rf_waddr: s1.rf_waddr, rf_wdata: fwd_data1};
+
+assign ex1_is_load0 = ex1_v0 & s0.is_ld & s0.rf_we;
+assign ex1_is_load1 = ex1_v1 & s1.is_ld & s1.rf_we;
 
 endmodule

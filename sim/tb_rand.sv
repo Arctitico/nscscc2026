@@ -137,6 +137,7 @@ module tb_rand;
     // ---- 锁步比对（同拍按 slot0、slot1 的程序序检查）----
     integer tptr, errors;
     integer mul_accept_streak, max_mul_accept_streak, mul_turnovers;
+    integer late_load_store_hits;
 
     task automatic check_commit(input [31:0] cpc, input [4:0] cwn, input [31:0] cwd);
         if (tptr >= ncommit) begin
@@ -157,6 +158,7 @@ module tb_rand;
             mul_accept_streak = 0;
             max_mul_accept_streak = 0;
             mul_turnovers = 0;
+            late_load_store_hits = 0;
         end else begin
             if (|debug_wb_rf_we)  check_commit(debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
             if (|debug_wb1_rf_we) check_commit(debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
@@ -171,6 +173,10 @@ module tb_rand;
             end else begin
                 mul_accept_streak = 0;
             end
+            if (u_cpu.u_EX1.ex1_valid & u_cpu.u_EX1.late_ready &
+                ((u_cpu.u_EX1.s0.late_store_data) |
+                 (u_cpu.u_EX1.ex1_r.v1 & u_cpu.u_EX1.s1.late_store_data)))
+                late_load_store_hits = late_load_store_hits + 1;
             if ($test$plusargs("trace_mem") && data_wr_req)
                 $display("[STORE] pc0=%08x pc1=%08x v1=%0b addr=%08x we=%x data=%08x",
                          u_cpu.u_EX2.s0.pc, u_cpu.u_EX2.s1.pc, u_cpu.u_EX2.ex_v1_eff,
@@ -256,6 +262,16 @@ module tb_rand;
             end else begin
                 $display("==== MUL PIPELINE PASSED: streak=%0d turnovers=%0d ====",
                          max_mul_accept_streak, mul_turnovers);
+            end
+        end
+        if ($test$plusargs("CHECK_LATE_BYPASS")) begin
+            if (late_load_store_hits < 1) begin
+                $display("  FAIL late bypass load->store=%0d, expected >=1",
+                         late_load_store_hits);
+                errors = errors + 1;
+            end else begin
+                $display("==== LATE BYPASS PASSED: load->store=%0d ====",
+                         late_load_store_hits);
             end
         end
 
