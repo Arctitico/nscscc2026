@@ -230,7 +230,7 @@ fi
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
 
-project_file="${fpga_dir}/project/Individual_SoC.xpr"
+project_file="${fpga_dir}/project/thinpad_top.xpr"
 if (( recreate_project )) || [[ ! -f "$project_file" ]]; then
     echo "==> 创建 individual Vivado 工程"
     pushd "$fpga_dir" >/dev/null
@@ -251,7 +251,7 @@ cmd.exe /d /s /c "$vivado" -mode batch -nojournal -nolog \
 popd >/dev/null
 
 summary_file="${output_dir}/build_summary.txt"
-bit_file="${output_dir}/soc_top.bit"
+bit_file="${output_dir}/thinpad_top.bit"
 [[ -f "$summary_file" ]] || die "未找到构建摘要：$summary_file"
 [[ -f "$bit_file" ]] || die "未找到 bitstream：$bit_file"
 sed -i 's/\r$//' "$summary_file"

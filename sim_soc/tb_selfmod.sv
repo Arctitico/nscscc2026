@@ -18,17 +18,18 @@ module tb_selfmod;
     wire ext_ram_ce_n, ext_ram_oe_n, ext_ram_we_n;
     wire [15:0] leds;
     wire [7:0] dpy0, dpy1;
-    wire [22:0] flash_a;
-    wire [15:0] flash_d;
-    wire flash_rp_n, flash_vpen, flash_ce_n, flash_oe_n;
-    wire flash_we_n, flash_byte_n;
     wire [2:0] video_red, video_green;
     wire [1:0] video_blue;
     wire video_hsync, video_vsync, video_clk, video_de;
 
-    thinpad_top u_dut (
-        .clk_50M(clk_50M), .clk_11M0592(1'b0),
-        .clock_btn(1'b0), .reset_btn(reset_btn),
+    thinpad_top #(
+        .SIMULATION               (1),
+        .CPU_CLK_HZ               (50_000_000),
+        .SRAM_READ_CYCLES         (3),
+        .SRAM_WRITE_CYCLES        (3),
+        .SRAM_WRITE_HOLD_CYCLES   (1)
+    ) u_dut (
+        .clk(clk_50M), .reset(reset_btn),
         .touch_btn(4'b0), .dip_sw(32'b0),
         .leds(leds), .dpy0(dpy0), .dpy1(dpy1),
         .base_ram_data(base_ram_data), .base_ram_addr(base_ram_addr),
@@ -37,11 +38,7 @@ module tb_selfmod;
         .ext_ram_data(ext_ram_data), .ext_ram_addr(ext_ram_addr),
         .ext_ram_be_n(ext_ram_be_n), .ext_ram_ce_n(ext_ram_ce_n),
         .ext_ram_oe_n(ext_ram_oe_n), .ext_ram_we_n(ext_ram_we_n),
-        .txd(txd), .rxd(rxd),
-        .flash_a(flash_a), .flash_d(flash_d), .flash_rp_n(flash_rp_n),
-        .flash_vpen(flash_vpen), .flash_ce_n(flash_ce_n),
-        .flash_oe_n(flash_oe_n), .flash_we_n(flash_we_n),
-        .flash_byte_n(flash_byte_n),
+        .UART_TX(txd), .UART_RX(rxd),
         .video_red(video_red), .video_green(video_green),
         .video_blue(video_blue), .video_hsync(video_hsync),
         .video_vsync(video_vsync), .video_clk(video_clk),

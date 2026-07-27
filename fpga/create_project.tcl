@@ -1,4 +1,4 @@
-set project_name Individual_SoC
+set project_name thinpad_top
 set project_path ./project
 set project_part xc7a200tfbg676-2
 
@@ -12,11 +12,11 @@ set rtl_files [list \
     ../src/IF.sv ../src/ID.sv ../src/DP.sv ../src/IS.sv ../src/RF.sv \
     ../src/EX1.sv ../src/EX2.sv ../src/CM.sv ../src/mycpu_top.sv \
     ../soc/sram_ctrl.sv ../soc/uart_phy.sv ../soc/uart_mm.sv \
-    ../soc/mem_bridge.sv ../soc/board_clock.sv ../soc/soc_top.sv]
+    ../soc/mem_bridge.sv ../soc/board_clock.sv ../soc/thinpad_top.sv]
 add_files -scan_for_includes $rtl_files
 add_files -fileset constrs_1 ./constraints/soc.xdc
 
-set_property top soc_top [current_fileset]
+set_property top thinpad_top [current_fileset]
 update_compile_order -fileset sources_1
 
 puts "PROJECT: [file normalize $project_path/$project_name.xpr]"

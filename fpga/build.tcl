@@ -12,7 +12,7 @@ set sram_write_cycles      [lindex $argv 5]
 set sram_write_hold_cycles [lindex $argv 6]
 set jobs       [lindex $argv 7]
 set report_dir [file normalize [lindex $argv 8]]
-set project_file [file normalize ./project/Individual_SoC.xpr]
+set project_file [file normalize ./project/thinpad_top.xpr]
 set expected_part xc7a200tfbg676-2
 
 proc require_run_complete {run_name phase} {
@@ -54,7 +54,7 @@ launch_runs impl_1 -to_step write_bitstream -jobs $jobs
 wait_on_run impl_1
 require_run_complete impl_1 Implementation
 
-set bit_files [glob -nocomplain ./project/Individual_SoC.runs/impl_1/*.bit]
+set bit_files [glob -nocomplain ./project/thinpad_top.runs/impl_1/*.bit]
 if {[llength $bit_files] == 0} {
     puts stderr "Implementation completed without a bitstream"
     close_project
@@ -114,6 +114,6 @@ puts $summary "TIMING_MET=[expr {$setup_wns >= 0.0 && $hold_whs >= 0.0}]"
 puts $summary "VIVADO_VERSION=[version -short]"
 close $summary
 
-file copy -force [lindex $bit_files 0] "$report_dir/soc_top.bit"
+file copy -force [lindex $bit_files 0] "$report_dir/thinpad_top.bit"
 close_project
 exit 0

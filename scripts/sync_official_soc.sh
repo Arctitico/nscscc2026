@@ -9,7 +9,8 @@ Compare or copy the signed-off direct-SoC RTL from individual to the official
 preT202610699009694 repository. The default mode is read-only --check.
 
 The script never stages, commits, pushes, deletes, or modifies official-only
-files such as thinpad_top.sv, constraints, CI flow, README.md, or design.pdf.
+files such as CI flow, README.md, or design.pdf. The direct thinpad_top RTL and
+its board constraint are managed design sources and are synchronized.
 EOF
 }
 
@@ -61,6 +62,8 @@ if [[ ! -d "${target_repo}/.git" ]]; then
 fi
 target_repo="$(git -C "${target_repo}" rev-parse --show-toplevel)"
 target_dir="${target_repo}/src/soc"
+source_constraint="${individual_dir}/fpga/constraints/soc.xdc"
+target_constraint="${target_repo}/run_vivado/constraints/thinpad_top.xdc"
 
 target_remote="$(git -C "${target_repo}" remote get-url origin 2>/dev/null || true)"
 if [[ "${target_remote}" != *"preT202610699009694.git" ]]; then
@@ -73,7 +76,11 @@ if [[ "${target_branch}" != "inorder-dual-issue" ]]; then
     exit 1
 fi
 if [[ ! -f "${target_dir}/thinpad_top.sv" ]]; then
-    echo "error: official wrapper is missing: ${target_dir}/thinpad_top.sv" >&2
+    echo "error: official top is missing: ${target_dir}/thinpad_top.sv" >&2
+    exit 1
+fi
+if [[ ! -f "${target_constraint}" ]]; then
+    echo "error: official constraint is missing: ${target_constraint}" >&2
     exit 1
 fi
 
@@ -84,12 +91,12 @@ cpu_sources=(
     mycpu_top.sv
 )
 soc_sources=(
-    sram_ctrl.sv uart_phy.sv uart_mm.sv mem_bridge.sv board_clock.sv soc_top.sv
+    sram_ctrl.sv uart_phy.sv uart_mm.sv mem_bridge.sv board_clock.sv
+    thinpad_top.sv
 )
-official_only_sources=(thinpad_top.sv)
 # 已退出流水线、但按本脚本“不删除目标文件”的约定允许留在官方仓库。
 retired_sources=(WB.sv)
-expected_sources=("${cpu_sources[@]}" "${soc_sources[@]}" "${official_only_sources[@]}" "${retired_sources[@]}")
+expected_sources=("${cpu_sources[@]}" "${soc_sources[@]}" "${retired_sources[@]}")
 
 is_expected_source() {
     local candidate="$1"
@@ -152,6 +159,17 @@ for source in "${soc_sources[@]}"; do
         fi
     fi
 done
+if [[ ! -f "${source_constraint}" ]]; then
+    echo "error: managed constraint is missing: ${source_constraint}" >&2
+    exit 1
+fi
+if ! cmp -s "${source_constraint}" "${target_constraint}"; then
+    echo "${mode}: fpga/constraints/soc.xdc -> run_vivado/constraints/thinpad_top.xdc"
+    differences=$((differences + 1))
+    if [[ "${mode}" == "apply" ]]; then
+        install -m 0644 "${source_constraint}" "${target_constraint}"
+    fi
+fi
 
 source_sha="$(git -C "${individual_dir}" rev-parse HEAD)"
 source_label="${source_sha}"

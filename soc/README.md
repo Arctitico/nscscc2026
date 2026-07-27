@@ -5,7 +5,7 @@
 ## 模块关系
 
 ```text
-soc_top
+thinpad_top
 ├── board_clock     50 MHz 输入到参数化 CPU PLL
 ├── mycpu_top       九级顺序双发射 CPU
 └── mem_bridge      地址译码与 Base/Ext 仲裁
@@ -15,7 +15,10 @@ soc_top
         └── uart_phy 仓内收发器
 ```
 
-`soc_top.sv` 是 2026 物理引脚边界，端口名与比赛板卡约束一致，负责 PLL/复位、CPU/桥连接、SRAM `inout` 三态和未使用外设禁用。`thinpad_top.sv` 只保留给旧本地 testbench。
+`thinpad_top.sv` 是唯一的 2026 物理引脚边界，也是官方模板要求名称的
+顶层模块。它直接负责 PLL/复位、CPU/桥连接、SRAM `inout` 三态和未使用
+外设禁用，不再在官方仓外包一层参考 wrapper。`SIMULATION=1` 时同一模块
+旁路 PLL，SoC testbench 因而也直接覆盖正式板级顶层。
 
 ## 地址空间
 
@@ -46,7 +49,7 @@ data_rd_req/addr -> data_rd_ok + data_rd_data
 data_wr_req/addr/strb/data -> data_wr_ok
 ```
 
-`sram_ctrl.sv` 把请求转换为异步 SRAM 的 `CE/OE/WE/BE` 多周期时序。写结束、`WE#` 上升后，`ram_wdrive` 继续保持一个完整 CPU 周期；地址、字节使能和写数据在该周期内也不更新。物理数据线三态在两个板级顶层处理。
+`sram_ctrl.sv` 把请求转换为异步 SRAM 的 `CE/OE/WE/BE` 多周期时序。写结束、`WE#` 上升后，`ram_wdrive` 继续保持一个完整 CPU 周期；地址、字节使能和写数据在该周期内也不更新。物理数据线三态在 `thinpad_top` 处理。
 
 当前默认物理要求为读 `20 ns`、写脉冲 `20 ns`、写后保持 `1` 拍。`build_fpga.sh` 按 PLL 实际频率把前两项向上取整为整数周期；90 MHz 签核基线得到 `2/2/1` 拍，即约 `22.22/22.22/11.11 ns`。
 

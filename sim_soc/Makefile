@@ -217,7 +217,8 @@ fuzz:
 	echo "==== ALL $(COUNT) SEEDS PASSED ===="
 
 lint:
-	verilator --lint-only --top-module thinpad_top -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND $(SRCS)
+	verilator --lint-only --top-module thinpad_top -GSIMULATION=1 \
+		-Wno-WIDTHTRUNC -Wno-WIDTHEXPAND $(SRCS)
 
 clean:
 	rm -rf obj_dir test.hex selfmod.hex level1.hex kernel.hex golden_trace.hex golden_mem.hex golden.meta

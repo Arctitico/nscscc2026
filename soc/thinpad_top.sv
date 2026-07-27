@@ -1,46 +1,48 @@
 `default_nettype none
 // ============================================================================
-// thinpad_top —— 板级顶层（替换官方模版同名 demo）
+// 2026 官方提交顶层：CPU 私有类 SRAM 口直接连接 BaseRAM / ExtRAM / UART。
 //
-// 引脚表与官方模版完全一致，可直接加入 2025_nscscc 个人赛模版工程并设为顶层，
-// 也能被模版 sim_1/new/tb.sv（接 sram_model + cpld 串口模型）仿真。
-//
-// 结构：clk = clk_50M（直接用，复位为 reset_btn 同步后高有效）；
-//   mycpu_top（顺序单发射，取指突发读口 + 访存单字 data_ok 停顿）
-//     ↕ mem_bridge（地址译码 + 访存优先仲裁 + BaseRAM/ExtRAM 多周期控制器 + UART）
-//   物理 inout 数据线的三态在本层完成。其余外设（Flash/VGA/数码管/LED）置为非活动。
-//
-// 2026 地址映射：0x1c000000–0x1c3fffff→BaseRAM，
-//   0x1c400000–0x1c7fffff→ExtRAM，0x1f000000–0x1f0fffff→UART。
-// UART_DATA=0x1f000000，UART_STATUS=0x1f000005；复位 PC=0x1c000000。
+// 本设计没有 AXI、跨时钟 AXI 桥或官方参考 SoC。CPU、cache、仲裁器和物理 SRAM
+// 控制器工作在同一个 cpu_clk 域。SIMULATION=1 时旁路 PLL，便于顶层仿真。
 // ============================================================================
 module thinpad_top #(
-    parameter integer SRAM_READ_CYCLES       = 3,
-    parameter integer SRAM_WRITE_CYCLES      = 3,
-    parameter integer SRAM_WRITE_HOLD_CYCLES = 1,
-    parameter integer CLK_FREQ               = 50_000_000
+`ifdef SIMULATION
+    parameter integer SIMULATION         = 1,
+`else
+    parameter integer SIMULATION         = 0,
+`endif
+    parameter integer CPU_CLK_HZ          = 110_000_000,
+    parameter integer PLL_DIVCLK_DIVIDE   = 1,
+    parameter integer PLL_CLKFBOUT_MULT   = 22,
+    parameter integer PLL_CLKOUT0_DIVIDE  = 10,
+    parameter integer SRAM_READ_CYCLES       = 2,
+    parameter integer SRAM_WRITE_CYCLES      = 2,
+    parameter integer SRAM_WRITE_HOLD_CYCLES = 1
 ) (
-    input  wire        clk_50M,        // 50MHz 时钟输入
-    input  wire        clk_11M0592,    // 11.0592MHz 时钟输入（备用，可不用）
+    input  wire        clk,
+    input  wire        reset,
 
-    input  wire        clock_btn,      // BTN5 手动时钟按钮，带消抖，按下为 1
-    input  wire        reset_btn,      // BTN6 手动复位按钮，带消抖，按下为 1
+    output wire [ 2:0] video_red,
+    output wire [ 2:0] video_green,
+    output wire [ 1:0] video_blue,
+    output wire        video_hsync,
+    output wire        video_vsync,
+    output wire        video_clk,
+    output wire        video_de,
 
-    input  wire [ 3:0] touch_btn,      // BTN1~BTN4，按下为 1
-    input  wire [31:0] dip_sw,         // 32 位拨码开关，ON 为 1
-    output wire [15:0] leds,           // 16 位 LED，输出 1 点亮
-    output wire [ 7:0] dpy0,           // 数码管低位（含小数点）
-    output wire [ 7:0] dpy1,           // 数码管高位（含小数点）
+    input  wire [ 3:0] touch_btn,
+    input  wire [31:0] dip_sw,
+    output wire [15:0] leds,
+    output wire [ 7:0] dpy0,
+    output wire [ 7:0] dpy1,
 
-    // BaseRAM 信号
-    inout  wire [31:0] base_ram_data,  // 低 8 位与 CPLD 串口控制器共享
+    inout  wire [31:0] base_ram_data,
     output wire [19:0] base_ram_addr,
     output wire [ 3:0] base_ram_be_n,
     output wire        base_ram_ce_n,
     output wire        base_ram_oe_n,
     output wire        base_ram_we_n,
 
-    // ExtRAM 信号
     inout  wire [31:0] ext_ram_data,
     output wire [19:0] ext_ram_addr,
     output wire [ 3:0] ext_ram_be_n,
@@ -48,39 +50,43 @@ module thinpad_top #(
     output wire        ext_ram_oe_n,
     output wire        ext_ram_we_n,
 
-    // 直连串口
-    output wire        txd,
-    input  wire        rxd,
-
-    // Flash（本工程不用，禁用）
-    output wire [22:0] flash_a,
-    inout  wire [15:0] flash_d,
-    output wire        flash_rp_n,
-    output wire        flash_vpen,
-    output wire        flash_ce_n,
-    output wire        flash_oe_n,
-    output wire        flash_we_n,
-    output wire        flash_byte_n,
-
-    // 图像输出（本工程不用，禁用）
-    output wire [ 2:0] video_red,
-    output wire [ 2:0] video_green,
-    output wire [ 1:0] video_blue,
-    output wire        video_hsync,
-    output wire        video_vsync,
-    output wire        video_clk,
-    output wire        video_de
+    input  wire        UART_RX,
+    output wire        UART_TX
 );
 
-// ---------------- 时钟与复位 ----------------
-wire clk = clk_50M;
+wire cpu_clk;
+wire clock_locked;
 
-// reset_btn 同步进 clk 域，高有效；上电默认处于复位
-reg [1:0] rst_sync = 2'b11;
-always @(posedge clk) rst_sync <= {rst_sync[0], reset_btn};
-wire rst = rst_sync[1];
+generate
+if (SIMULATION != 0) begin : g_sim_clock
+    assign cpu_clk = clk;
+    assign clock_locked = ~reset;
+end else begin : g_board_clock
+    board_clock #(
+        .DIVCLK_DIVIDE (PLL_DIVCLK_DIVIDE),
+        .CLKFBOUT_MULT (PLL_CLKFBOUT_MULT),
+        .CLKOUT0_DIVIDE(PLL_CLKOUT0_DIVIDE)
+    ) u_clock (
+        .clk_in (clk),
+        .reset  (reset),
+        .cpu_clk(cpu_clk),
+        .locked (clock_locked)
+    );
+end
+endgenerate
 
-// ---------------- CPU ↔ 桥 内部连线 ----------------
+// 异步置位、同步释放复位。reset_pipe 的 INIT=11 也保证 FPGA 刚配置完成而
+// PLL 尚未输出时钟时，板级 SRAM/UART 引脚仍处于安全状态。
+reg [1:0] reset_pipe = 2'b11;
+always @(posedge cpu_clk or negedge clock_locked) begin
+    if (!clock_locked)
+        reset_pipe <= 2'b11;
+    else
+        reset_pipe <= {reset_pipe[0], 1'b0};
+end
+wire cpu_reset = reset_pipe[1];
+wire io_active = ~cpu_reset;
+
 wire        inst_rd_req;
 wire [31:0] inst_rd_addr;
 wire        inst_rd_rdy;
@@ -100,25 +106,52 @@ wire [ 3:0] data_wr_strb;
 wire [31:0] data_wr_data;
 wire        data_wr_ok;
 
-// ---------------- SRAM 写数据（三态在本层）----------------
 wire [31:0] base_ram_wdat;
 wire [31:0] ext_ram_wdat;
 wire        base_ram_wdrive;
 wire        ext_ram_wdrive;
+wire [19:0] base_ram_addr_int;
+wire [ 3:0] base_ram_be_n_int;
+wire        base_ram_ce_n_int;
+wire        base_ram_oe_n_int;
+wire        base_ram_we_n_int;
+wire [19:0] ext_ram_addr_int;
+wire [ 3:0] ext_ram_be_n_int;
+wire        ext_ram_ce_n_int;
+wire        ext_ram_oe_n_int;
+wire        ext_ram_we_n_int;
 
+// BaseRAM 低 8 位与板载下载控制器共享。两个 sram_ctrl 使用 cpu_reset 异步
+// 置位，即使 PLL 尚未起振也会直接把 CE#/OE#/WE# 和数据输出使能复位到安全
+// 状态。因此这里可以直接连接已寄存的控制器输出，避免 cpu_reset 组合门控
+// 64 位 OBUFT 所形成的高扇出关键路径。
+assign base_ram_addr = base_ram_addr_int;
+assign base_ram_be_n = base_ram_be_n_int;
+assign base_ram_ce_n = base_ram_ce_n_int;
+assign base_ram_oe_n = base_ram_oe_n_int;
+assign base_ram_we_n = base_ram_we_n_int;
 assign base_ram_data = base_ram_wdrive ? base_ram_wdat : 32'bz;
-assign ext_ram_data  = ext_ram_wdrive  ? ext_ram_wdat  : 32'bz;
 
-// ---------------- CPU ----------------
+assign ext_ram_addr = ext_ram_addr_int;
+assign ext_ram_be_n = ext_ram_be_n_int;
+assign ext_ram_ce_n = ext_ram_ce_n_int;
+assign ext_ram_oe_n = ext_ram_oe_n_int;
+assign ext_ram_we_n = ext_ram_we_n_int;
+assign ext_ram_data = ext_ram_wdrive ? ext_ram_wdat : 32'bz;
+
+wire uart_txd;
+wire uart_rxd = UART_RX;
+assign UART_TX = io_active ? uart_txd : 1'b1;
+
 mycpu_top u_cpu (
-    .clk            (clk            ),
-    .resetn         (~rst           ),
-    .inst_rd_req    (inst_rd_req    ),
-    .inst_rd_addr   (inst_rd_addr   ),
-    .inst_rd_rdy    (inst_rd_rdy    ),
-    .inst_ret_valid (inst_ret_valid ),
-    .inst_ret_data  (inst_ret_data  ),
-    .inst_ret_last  (inst_ret_last  ),
+    .clk            (cpu_clk),
+    .resetn         (~cpu_reset),
+    .inst_rd_req    (inst_rd_req),
+    .inst_rd_addr   (inst_rd_addr),
+    .inst_rd_rdy    (inst_rd_rdy),
+    .inst_ret_valid (inst_ret_valid),
+    .inst_ret_data  (inst_ret_data),
+    .inst_ret_last  (inst_ret_last),
     .data_rd_req    (data_rd_req),
     .data_rd_size   (data_rd_size),
     .data_rd_addr   (data_rd_addr),
@@ -142,21 +175,20 @@ mycpu_top u_cpu (
     .debug_wb1_rf_wdata()
 );
 
-// ---------------- 访存桥 ----------------
 mem_bridge #(
     .SRAM_READ_CYCLES(SRAM_READ_CYCLES),
     .SRAM_WRITE_CYCLES(SRAM_WRITE_CYCLES),
     .SRAM_WRITE_HOLD_CYCLES(SRAM_WRITE_HOLD_CYCLES),
-    .CLK_FREQ(CLK_FREQ)
+    .CLK_FREQ(CPU_CLK_HZ)
 ) u_bridge (
-    .clk            (clk            ),
-    .reset          (rst            ),
-    .inst_rd_req    (inst_rd_req    ),
-    .inst_rd_addr   (inst_rd_addr   ),
-    .inst_rd_rdy    (inst_rd_rdy    ),
-    .inst_ret_valid (inst_ret_valid ),
-    .inst_ret_data  (inst_ret_data  ),
-    .inst_ret_last  (inst_ret_last  ),
+    .clk            (cpu_clk),
+    .reset          (cpu_reset),
+    .inst_rd_req    (inst_rd_req),
+    .inst_rd_addr   (inst_rd_addr),
+    .inst_rd_rdy    (inst_rd_rdy),
+    .inst_ret_valid (inst_ret_valid),
+    .inst_ret_data  (inst_ret_data),
+    .inst_ret_last  (inst_ret_last),
     .data_rd_req    (data_rd_req),
     .data_rd_size   (data_rd_size),
     .data_rd_addr   (data_rd_addr),
@@ -168,40 +200,29 @@ mem_bridge #(
     .data_wr_strb   (data_wr_strb),
     .data_wr_data   (data_wr_data),
     .data_wr_ok     (data_wr_ok),
-    .base_ram_addr  (base_ram_addr  ),
-    .base_ram_be_n  (base_ram_be_n  ),
-    .base_ram_ce_n  (base_ram_ce_n  ),
-    .base_ram_oe_n  (base_ram_oe_n  ),
-    .base_ram_we_n  (base_ram_we_n  ),
+    .base_ram_addr  (base_ram_addr_int),
+    .base_ram_be_n  (base_ram_be_n_int),
+    .base_ram_ce_n  (base_ram_ce_n_int),
+    .base_ram_oe_n  (base_ram_oe_n_int),
+    .base_ram_we_n  (base_ram_we_n_int),
     .base_ram_wdrive(base_ram_wdrive),
-    .base_ram_wdat  (base_ram_wdat  ),
-    .base_ram_rdat  (base_ram_data  ),
-    .ext_ram_addr   (ext_ram_addr   ),
-    .ext_ram_be_n   (ext_ram_be_n   ),
-    .ext_ram_ce_n   (ext_ram_ce_n   ),
-    .ext_ram_oe_n   (ext_ram_oe_n   ),
-    .ext_ram_we_n   (ext_ram_we_n   ),
-    .ext_ram_wdrive (ext_ram_wdrive ),
-    .ext_ram_wdat   (ext_ram_wdat   ),
-    .ext_ram_rdat   (ext_ram_data   ),
-    .txd            (txd            ),
-    .rxd            (rxd            )
+    .base_ram_wdat  (base_ram_wdat),
+    .base_ram_rdat  (base_ram_data),
+    .ext_ram_addr   (ext_ram_addr_int),
+    .ext_ram_be_n   (ext_ram_be_n_int),
+    .ext_ram_ce_n   (ext_ram_ce_n_int),
+    .ext_ram_oe_n   (ext_ram_oe_n_int),
+    .ext_ram_we_n   (ext_ram_we_n_int),
+    .ext_ram_wdrive (ext_ram_wdrive),
+    .ext_ram_wdat   (ext_ram_wdat),
+    .ext_ram_rdat   (ext_ram_data),
+    .txd            (uart_txd),
+    .rxd            (uart_rxd)
 );
 
-// ---------------- 未使用外设：置非活动 ----------------
 assign leds        = 16'b0;
 assign dpy0        = 8'b0;
 assign dpy1        = 8'b0;
-
-assign flash_a     = 23'b0;
-assign flash_d     = 16'bz;
-assign flash_rp_n  = 1'b1;
-assign flash_vpen  = 1'b0;
-assign flash_ce_n  = 1'b1;
-assign flash_oe_n  = 1'b1;
-assign flash_we_n  = 1'b1;
-assign flash_byte_n= 1'b1;
-
 assign video_red   = 3'b0;
 assign video_green = 3'b0;
 assign video_blue  = 2'b0;
@@ -210,6 +231,7 @@ assign video_vsync = 1'b0;
 assign video_clk   = 1'b0;
 assign video_de    = 1'b0;
 
-endmodule
+wire unused_inputs = ^{touch_btn, dip_sw};
 
+endmodule
 `default_nettype wire
