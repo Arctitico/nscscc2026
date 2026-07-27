@@ -216,7 +216,6 @@ wire candidate_eligible = predict_s1_valid && predicted_cacheable &&
 wire candidate_push_empty = candidate_eligible & ~candidate_valid_r;
 wire candidate_push_replace = candidate_eligible & candidate_valid_r &
                               candidate_take;
-wire candidate_push = candidate_push_empty | candidate_push_replace;
 
 always @(posedge clk) begin
     if (reset) begin
@@ -229,8 +228,13 @@ always @(posedge clk) begin
         if (candidate_push_replace |
             (candidate_push_empty & ~candidate_take)) begin
             candidate_valid_r <= 1'b1;
-            candidate_line_r <= predicted_line;
         end
+        // payload 在 invalid 时是 don't-care：只要当前没有必须保留的旧项，
+        // 就可登记 predicted_line。这样 payload CE 只依赖本地 valid/take，
+        // 不再经过 predicted address、重复检查、pf_start 和 eligibility。
+        // 真正的 valid 保存/替换仍由上面的 candidate_push_* 精确控制。
+        if (~candidate_valid_r | candidate_take)
+            candidate_line_r <= predicted_line;
     end
 end
 

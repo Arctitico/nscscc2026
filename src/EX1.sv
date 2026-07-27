@@ -205,7 +205,10 @@ assign EX1_to_EX2_BUS = '{
           ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
           rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr},
     s1: '{pc: s1.pc, inst: s1.inst, base_result: base_result1,
-          mul_src1: s1.mul_src1, mul_src2: s1.mul_src2, is_mul: s1.is_mul,
+          mul_src1: s1.mul_src1, mul_src2: s1.mul_src2,
+          // 这里只掩掉本来就无效的 slot1，不串入 mispred/selfmod
+          // 精确 kill。若有效 MUL 随后被 kill，EX2 会消费并丢弃其 token。
+          is_mul: ex1_v1 & s1.is_mul,
           is_mem: is_mem1, addr_lo: mem_addr1[1:0],
           ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
           rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr},

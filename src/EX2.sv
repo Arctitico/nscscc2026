@@ -45,7 +45,10 @@ wire ex2_v1 = ex2_valid & ex2_r.v1;
 // 保留随机测试使用的层级调试名。
 wire ex_v1_eff = ex2_v1;
 
-wire incoming_mul1 = EX1_to_EX2_BUS.v1 & EX1_to_EX2_BUS.s1.is_mul;
+// s1.is_mul 已在 EX1 只用 pre-kill valid 掩码。允许随后因 slot0 分支
+// mispredict 或 selfmod 命中而被精确 kill 的 slot1 MUL 投机启动，避免
+// AGU/I-cache tag 比较经 BUS.v1 一直进入 DSP CE。
+wire incoming_mul1 = EX1_to_EX2_BUS.s1.is_mul;
 wire incoming_mul  = EX1_to_EX2_BUS.s0.is_mul | incoming_mul1;
 // IS 保证一个 bundle 至多一条 MUL。操作数选择只需看已寄存的 slot0
 // 类型；不要使用含 mispred0 精确 kill 的 v1，否则会形成
@@ -87,7 +90,9 @@ assign EX2_allow_in = ex2_slot_allow;
 
 assign mul_in_valid = EX1_to_EX2_valid & EX2_allow_in & incoming_mul;
 // 结果一出现就接收；若另一长延迟单元尚未完成，则在本级锁存保存。
-assign mul_out_ready = ex2_valid & ex2_has_mul;
+// 对动态 kill 的 slot1 MUL，EX2 bundle 仍有效而 ex2_has_mul=0，token
+// 在这里直接消费并丢弃，不能留在乘法器里阻塞后续真实 MUL。
+assign mul_out_ready = ex2_valid;
 
 mul u_mul (
     .clk(clk), .reset(reset),

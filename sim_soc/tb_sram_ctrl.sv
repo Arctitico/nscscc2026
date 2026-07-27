@@ -24,6 +24,8 @@ reg  [31:0] wdata = 32'b0;
 reg  [ 2:0] len = 3'b0;
 reg         tag_in = 1'b0;
 wire        ok;
+wire        rd_ok;
+wire        wr_ok;
 wire [31:0] rdata;
 wire        beat_last;
 wire        tag_out;
@@ -53,6 +55,8 @@ sram_ctrl #(
     .len(len),
     .tag_in(tag_in),
     .ok(ok),
+    .rd_ok(rd_ok),
+    .wr_ok(wr_ok),
     .rdata(rdata),
     .beat_last(beat_last),
     .tag_out(tag_out),
@@ -66,6 +70,19 @@ begin
            READ_CYCLES, WRITE_CYCLES, WRITE_HOLD_CYCLES, message);
 end
 endtask
+
+always @(negedge clk) begin
+    if (!reset) begin
+        if (ok !== (rd_ok | wr_ok))
+            fail("one-hot completion pulses do not match ok");
+        if (rd_ok && wr_ok)
+            fail("read and write completion asserted together");
+        if (ok && ram_wdrive && !wr_ok)
+            fail("write completion was not classified as write");
+        if (ok && !ram_wdrive && !rd_ok)
+            fail("read completion was not classified as read");
+    end
+end
 
 task automatic launch_request(
     input [3:0]  request_wstrb,

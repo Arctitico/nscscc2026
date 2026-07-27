@@ -43,6 +43,8 @@ module sram_ctrl #(
     input  wire [ 2:0] len,      // 突发字数-1（0=单字；写恒 0）
     input  wire        tag_in,   // 发起方标记（0=取指 1=访存），原样带回
     output wire        ok,        // 每 beat 一拍（读时同拍 rdata 有效）
+    output reg         rd_ok,     // 已按访问类型 one-hot 登记的完成脉冲
+    output reg         wr_ok,
     output wire [31:0] rdata,
     output wire        beat_last, // 突发最后一个 beat（单字时与 ok 同拍）
     output reg         tag_out,
@@ -78,17 +80,28 @@ wire advance_to_last_cycle = (state == S_ACC) && (cnt == 16'd1);
 wire next_burst_one_cycle = (state == S_ACC) && (cnt == 16'd0) &&
                             (widx != len_r) &&
                             (READ_COUNT_INIT == 16'd0);
+wire complete_next = accept_one_cycle | advance_to_last_cycle |
+                     next_burst_one_cycle;
+wire complete_next_write =
+    (accept_one_cycle & (|wstrb)) |
+    (advance_to_last_cycle & write_r);
 
 assign ok        = ok_q;
 assign beat_last = ok && (widx == len_r);
 assign rdata     = ram_rdat;                            // 读：末拍数据已稳定，组合直通
 
 always @(posedge clk) begin
-    if (reset)
+    if (reset) begin
         ok_q <= 1'b0;
-    else
-        ok_q <= accept_one_cycle | advance_to_last_cycle |
-                next_burst_one_cycle;
+        rd_ok <= 1'b0;
+        wr_ok <= 1'b0;
+    end else begin
+        ok_q <= complete_next;
+        // 与 ok_q 在同一沿预测并登记访问类型，避免完成返回后再由
+        // mem_bridge 的 is_write 状态组合解码。协议周期与 ok 完全相同。
+        rd_ok <= complete_next & ~complete_next_write;
+        wr_ok <= complete_next_write;
+    end
 end
 
 // 协议状态只使用同步复位。不要让这些寄存器带异步复位：它们会经过

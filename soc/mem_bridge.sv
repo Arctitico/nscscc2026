@@ -100,7 +100,8 @@ wire [ 2:0] base_len       = base_pick_data ?
                              INST_LEN;
 wire        base_tagin     = base_pick_data ? 1'b1 : 1'b0;
 
-wire        base_ok, base_beat_last, base_tagout;
+wire        base_ok, base_rd_ok, base_wr_ok;
+wire        base_beat_last, base_tagout;
 wire [31:0] base_rdata;
 
 sram_ctrl #(
@@ -115,19 +116,16 @@ sram_ctrl #(
     .ram_wdat(base_ram_wdat), .ram_rdat(base_ram_rdat),
     .req     (base_req     ), .wstrb(base_wstrb), .addr(base_acc_addr),
     .wdata   (data_wr_data), .len(base_len), .tag_in(base_tagin),
-    .ok      (base_ok      ), .rdata(base_rdata), .beat_last(base_beat_last),
+    .ok      (base_ok      ), .rd_ok(base_rd_ok), .wr_ok(base_wr_ok),
+    .rdata   (base_rdata), .beat_last(base_beat_last),
     .tag_out (base_tagout  ), .busy(base_busy)
 );
 
 // 取指被授予 Base：本片空闲、取指要、且无访存抢占
 wire base_grant_inst = ~base_busy & inst_base & ~base_pick_data;
-wire base_ret_inst   = base_ok & ~base_tagout;     // 取指 beat
-wire base_ok_data    = base_ok &  base_tagout;     // 访存完成
-reg base_data_is_write;
-always @(posedge clk) begin
-    if (~base_busy & base_pick_data)
-        base_data_is_write <= base_pick_write;
-end
+wire base_ret_inst   = base_rd_ok & ~base_tagout;  // 取指 beat
+wire base_rd_ok_data = base_rd_ok &  base_tagout;
+wire base_wr_ok_data = base_wr_ok &  base_tagout;
 
 // ================= ExtRAM 仲裁（访存优先；突发原子）=================
 wire        ext_busy;
@@ -143,7 +141,8 @@ wire [ 2:0] ext_len       = ext_pick_data ?
                             INST_LEN;
 wire        ext_tagin     = ext_pick_data ? 1'b1 : 1'b0;
 
-wire        ext_ok, ext_beat_last, ext_tagout;
+wire        ext_ok, ext_rd_ok, ext_wr_ok;
+wire        ext_beat_last, ext_tagout;
 wire [31:0] ext_rdata;
 
 sram_ctrl #(
@@ -158,18 +157,15 @@ sram_ctrl #(
     .ram_wdat(ext_ram_wdat), .ram_rdat(ext_ram_rdat),
     .req     (ext_req     ), .wstrb(ext_wstrb), .addr(ext_acc_addr),
     .wdata   (data_wr_data), .len(ext_len), .tag_in(ext_tagin),
-    .ok      (ext_ok      ), .rdata(ext_rdata), .beat_last(ext_beat_last),
+    .ok      (ext_ok      ), .rd_ok(ext_rd_ok), .wr_ok(ext_wr_ok),
+    .rdata   (ext_rdata), .beat_last(ext_beat_last),
     .tag_out (ext_tagout  ), .busy(ext_busy)
 );
 
 wire ext_grant_inst = ~ext_busy & inst_ext & ~ext_pick_data;
-wire ext_ret_inst   = ext_ok & ~ext_tagout;
-wire ext_ok_data    = ext_ok &  ext_tagout;
-reg ext_data_is_write;
-always @(posedge clk) begin
-    if (~ext_busy & ext_pick_data)
-        ext_data_is_write <= ext_pick_write;
-end
+wire ext_ret_inst   = ext_rd_ok & ~ext_tagout;
+wire ext_rd_ok_data = ext_rd_ok &  ext_tagout;
+wire ext_wr_ok_data = ext_wr_ok &  ext_tagout;
 
 // ---------------- UART（仅访存，单字）----------------
 wire        uart_ok;
@@ -194,13 +190,11 @@ assign inst_ret_data  = base_ret_inst ? base_rdata : ext_rdata;
 assign inst_ret_last  = (base_ret_inst & base_beat_last) | (ext_ret_inst & ext_beat_last);
 
 // ---------------- 访存返回路由 ----------------
-assign data_rd_ok   = (base_ok_data & ~base_data_is_write) |
-                      (ext_ok_data & ~ext_data_is_write) |
+assign data_rd_ok   = base_rd_ok_data | ext_rd_ok_data |
                       (uart_ok & ~uart_tagout);
-assign data_wr_ok   = (base_ok_data & base_data_is_write) |
-                      (ext_ok_data & ext_data_is_write) |
+assign data_wr_ok   = base_wr_ok_data | ext_wr_ok_data |
                       (uart_ok & uart_tagout);
-assign data_rd_data = (base_ok_data & ~base_data_is_write) ? base_rdata :
-                      (ext_ok_data & ~ext_data_is_write) ? ext_rdata : uart_rdata;
+assign data_rd_data = base_rd_ok_data ? base_rdata :
+                      ext_rd_ok_data ? ext_rdata : uart_rdata;
 
 endmodule

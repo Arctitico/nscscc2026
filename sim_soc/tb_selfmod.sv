@@ -91,6 +91,8 @@ module tb_selfmod;
                 $fatal(1, "selfmod hit attributed to wrong store PC");
             if (!u_dut.u_cpu.u_EX1.ex1_r.v1)
                 $fatal(1, "directed store did not coissue with slot1");
+            if (!u_dut.u_cpu.u_EX2.mul_in_valid)
+                $fatal(1, "killed slot1 MUL was not launched speculatively");
             if (!u_dut.u_cpu.u_bpu.btb_valid[TARGET_BTB_INDEX])
                 $fatal(1, "target branch was not present in BTB before clear");
         end
@@ -102,6 +104,10 @@ module tb_selfmod;
                 $fatal(1, "triggering store was cleared before EX2 completed");
             if (u_dut.u_cpu.u_EX2.ex2_r.v1)
                 $fatal(1, "selfmod store failed to kill same-bundle slot1");
+            if (!u_dut.u_cpu.u_EX2.u_mul.out_valid ||
+                !u_dut.u_cpu.u_EX2.mul_out_ready ||
+                u_dut.u_cpu.u_EX2.ex2_has_mul)
+                $fatal(1, "killed slot1 MUL token was not discarded in EX2");
             #1;
             if (u_dut.u_cpu.u_bpu.btb_valid != '0)
                 $fatal(1, "selfmod flush did not clear the BTB");
@@ -154,7 +160,7 @@ module tb_selfmod;
         if (base_mem[TARGET_WORD] != NEW_TARGET)
             $fatal(1, "physical code store did not update BaseRAM");
         if (ext_mem[0] != 32'd2 || ext_mem[1] != 32'h123 ||
-            ext_mem[2] != 32'd1 || ext_mem[3] != 32'd1)
+            ext_mem[2] != 32'd9 || ext_mem[3] != 32'd1)
             $fatal(1, "architectural result mismatch: %h %h %h %h",
                    ext_mem[0], ext_mem[1], ext_mem[2], ext_mem[3]);
         if (selfmod_hits != 1 || selfmod_flushes != 1)
