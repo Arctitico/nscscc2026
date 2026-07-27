@@ -51,6 +51,16 @@ d_bus_t db1;
 assign db0 = idp.s0.d_bus;
 assign db1 = idp.s1.d_bus;
 
+// IS 只会让 SLL -> ADD/XOR 的 intra-RAW 共发。进入 RF 后重新按保存的
+// 完整 decoded bundle 生成精确源标记，避免增加 IS->RF payload。
+wire       bundle_s0_writes = idp.v1 & db0.rf_we &
+                              (db0.rf_waddr != 5'b0);
+wire [4:0] bundle_s1_rkd = db1.src_reg_is_rd ? db1.rd : db1.rk;
+wire       s1_dep_rj_from_s0 = bundle_s0_writes & db1.need_rj &
+                               (db0.rf_waddr == db1.rj);
+wire       s1_dep_rkd_from_s0 = bundle_s0_writes & db1.need_rkd &
+                                (db0.rf_waddr == bundle_s1_rkd);
+
 assign rf_raddr1 = db0.rj;
 assign rf_raddr2 = db0.src_reg_is_rd ? db0.rd : db0.rk;
 assign rf_raddr3 = db1.rj;
@@ -106,8 +116,13 @@ wire [31:0] fwd_rkd1 = resolved_rkd1[31:0];
 // consumer 只依赖年轻写者；不能把老 load/MUL 的未完成状态再 OR 进来。
 wire rj_pending0 = db0.need_rj  & resolved_rj0[32];
 wire rk_pending0 = db0.need_rkd & resolved_rkd0[32];
-wire rj_pending1 = db1.need_rj  & resolved_rj1[32];
-wire rk_pending1 = db1.need_rkd & resolved_rkd1[32];
+// 同 bundle 的 slot0 是 slot1 对应源的最年轻生产者。该源不能再被
+// regfile/EX1/EX2/CM 中更老的同名写者标成 pending；slot0 自身若依赖
+// 老生产者，仍由 slot0 的普通 pending 阻塞整个 bundle。
+wire rj_pending1 = db1.need_rj  & resolved_rj1[32] &
+                   ~s1_dep_rj_from_s0;
+wire rk_pending1 = db1.need_rkd & resolved_rkd1[32] &
+                   ~s1_dep_rkd_from_s0;
 
 // 晚旁路只覆盖当前 EX1 中最年轻的同名生产者确为 load 的情况。若 slot1
 // 已有更年轻的同名 ALU 写者，不能误取 slot0 load。
@@ -198,6 +213,8 @@ assign RF_to_EX_BUS = '{
         ld_width: db1.ld_width, ld_ext_signed: db1.ld_ext_signed,
         rf_wdata_sel: db1.rf_wdata_sel, rf_we: db1.rf_we, rf_waddr: db1.rf_waddr
     },
+    s1_dep_rj_from_s0: s1_dep_rj_from_s0,
+    s1_dep_rkd_from_s0: s1_dep_rkd_from_s0,
     v1: idp.v1
 };
 

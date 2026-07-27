@@ -98,6 +98,8 @@ wire head_both_mul;
 wire head_both_branch;
 wire head_b0_me1;
 wire head_special;
+wire head_both_alu;
+wire head_fast_intra_raw;
 wire head_pairable;
 
 d_bus_t input0;
@@ -112,6 +114,8 @@ wire input_both_mul;
 wire input_both_branch;
 wire input_b0_me1;
 wire input_special;
+wire input_both_alu;
+wire input_fast_intra_raw;
 
 assign head = dp_bus.id_to_dp_bus;
 assign head0 = head.s0.d_bus;
@@ -128,7 +132,13 @@ assign head_both_mul = head0.is_mul & head1.is_mul;
 assign head_both_branch = head0.is_branch & head1.is_branch;
 assign head_b0_me1 = head0.is_branch & head1_mem;
 assign head_special = head0.is_cpucfg | head1.is_cpucfg;
-assign head_pairable = head.v1 & ~head_raw & ~head_special &
+assign head_both_alu = (|head0.alu_op) & (|head1.alu_op);
+assign head_fast_intra_raw = head0.alu_op[8] &
+                             (head1.alu_op[0] | head1.alu_op[7]);
+assign head_pairable = head.v1 &
+                       (~head_raw |
+                        (head_both_alu & head_fast_intra_raw)) &
+                       ~head_special &
                        ~head_both_mem & ~head_both_mul &
                        ~head_both_branch & ~head_b0_me1;
 
@@ -146,10 +156,16 @@ assign input_both_mul = input0.is_mul & input1.is_mul;
 assign input_both_branch = input0.is_branch & input1.is_branch;
 assign input_b0_me1 = input0.is_branch & input1_mem;
 assign input_special = input0.is_cpucfg | input1.is_cpucfg;
+assign input_both_alu = (|input0.alu_op) & (|input1.alu_op);
+assign input_fast_intra_raw = input0.alu_op[8] &
+                              (input1.alu_op[0] | input1.alu_op[7]);
 
 wire [1:0] pushed = id_push ? (id_push_two ? 2'd2 : 2'd1) : 2'd0;
 wire [1:0] popped = dp_pop ? (dp_take_two ? 2'd2 : 2'd1) : 2'd0;
-wire input_pairable = id_push_two & ~input_raw & ~input_special &
+wire input_pairable = id_push_two &
+                      (~input_raw |
+                       (input_both_alu & input_fast_intra_raw)) &
+                      ~input_special &
                       ~input_both_mem & ~input_both_mul &
                       ~input_both_branch & ~input_b0_me1;
 

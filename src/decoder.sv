@@ -73,8 +73,7 @@ assign d_bus.alu_op = {
     1'b0,                                                          // [ 3] sltu（未用）
     inst_slt,                                                      // [ 2] slt
     inst_sub_w,                                                    // [ 1] sub
-    inst_add_w | inst_addi_w | inst_pcaddu12i |                    // [ 0] add
-    inst_ld_w  | inst_ld_b   | inst_st_w | inst_st_b
+    inst_add_w | inst_addi_w | inst_pcaddu12i                      // [ 0] add
 };
 
 assign d_bus.src1_is_pc    = inst_bl | inst_pcaddu12i;

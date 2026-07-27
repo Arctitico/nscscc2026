@@ -67,9 +67,11 @@ assign db1 = idp.s1.d_bus;
 
 wire        s0_writes = db0.rf_we & (db0.rf_waddr != 5'b0);
 wire [ 4:0] s1_rkd    = db1.src_reg_is_rd ? db1.rd : db1.rk;
-wire        intra_raw = s0_writes &
-                        ((db1.need_rj  & (db0.rf_waddr == db1.rj)) |
-                         (db1.need_rkd & (db0.rf_waddr == s1_rkd)));
+wire        intra_raw_rj = s0_writes & db1.need_rj &
+                           (db0.rf_waddr == db1.rj);
+wire        intra_raw_rkd = s0_writes & db1.need_rkd &
+                            (db0.rf_waddr == s1_rkd);
+wire        intra_raw = intra_raw_rj | intra_raw_rkd;
 wire s0_mu = db0.is_mul;
 wire s1_mu = db1.is_mul;
 wire s0_b  = db0.is_branch;
@@ -84,6 +86,12 @@ wire both_branch    = s0_b  & s1_b;
 wire both_mem       = s0_me & s1_me;
 wire branch_mem_bad = s0_b  & s1_me;
 wire any_special    = s0_s  | s1_s;
+// decoder 保证只有普通 ALU 指令会置任一 alu_op 位；ME 使用独立 AGU，
+// MUL/branch/CPUCFG 使用专用结果或控制路径。无 RAW 的双 ALU 仍可正常
+// 共发；有 RAW 时只开放可走 EX1 专用短路径的 SLL -> ADD/XOR。
+wire both_alu = (|db0.alu_op) & (|db1.alu_op);
+wire fast_intra_raw = db0.alu_op[8] &
+                      (db1.alu_op[0] | db1.alu_op[7]);
 
 wire type_pair_ok = ~any_special &
                     ~both_mul &
@@ -91,7 +99,8 @@ wire type_pair_ok = ~any_special &
                     ~both_mem &
                     ~branch_mem_bad;
 
-wire can_coissue = idp.v1 & type_pair_ok & ~intra_raw;
+wire can_coissue = idp.v1 & type_pair_ok &
+                   (~intra_raw | (both_alu & fast_intra_raw));
 wire loading_split = idp.v1 & ~can_coissue;
 
 assign IS_to_RF_valid = is_valid;

@@ -151,6 +151,10 @@ typedef struct packed {
 typedef struct packed {
     rf_ex_slot_t s0;
     rf_ex_slot_t s1;
+    // 同 bundle 的 slot1 ADD/XOR 源直接消费 slot0 SLL 结果。
+    // RF 重新按寄存器号生成标记，避免扩大 IS->RF payload。
+    logic        s1_dep_rj_from_s0;
+    logic        s1_dep_rkd_from_s0;
     logic        v1;
 } rf_to_ex_bus_t;
 

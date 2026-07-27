@@ -90,6 +90,20 @@ alu u_alu0(.alu_src1(s0.alu_src1), .alu_src2(s0.alu_src2),
 alu u_alu1(.alu_src1(s1.alu_src1), .alu_src2(s1.alu_src2),
            .alu_op(s1.alu_op), .alu_result(alu_result1));
 
+// IS 只允许 SLL -> ADD/XOR 携带 bundle 内 RAW。专用通路直接生成 shift
+// 结果和第二条运算，绕开两套通用 ALU 的 13 路结果选择；依赖可落在
+// slot1 任一源，两个源同时命中也保持精确语义。
+wire [31:0] intra_sll_result = s0.alu_src1 << s0.alu_src2[4:0];
+wire [31:0] intra_src1 = ex1_r.s1_dep_rj_from_s0
+                       ? intra_sll_result : s1.alu_src1;
+wire [31:0] intra_src2 = ex1_r.s1_dep_rkd_from_s0
+                       ? intra_sll_result : s1.alu_src2;
+wire [31:0] intra_result = s1.alu_op[0]
+                         ? (intra_src1 + intra_src2)
+                         : (intra_src1 ^ intra_src2);
+wire        has_intra_raw = ex1_r.s1_dep_rj_from_s0 |
+                            ex1_r.s1_dep_rkd_from_s0;
+
 function automatic [31:0] cpucfg(input [31:0] index);
     case (index)
         32'h0000_0010: cpucfg = 32'h0000_0000;
@@ -98,7 +112,8 @@ function automatic [31:0] cpucfg(input [31:0] index);
 endfunction
 
 wire [31:0] base_result0 = s0.is_cpucfg ? cpucfg(s0.alu_src1) : alu_result0;
-wire [31:0] base_result1 = s1.is_cpucfg ? cpucfg(s1.alu_src1) : alu_result1;
+wire [31:0] base_result1 = s1.is_cpucfg ? cpucfg(s1.alu_src1)
+                           : has_intra_raw ? intra_result : alu_result1;
 
 // ---------------- 双槽分支解析；IS 保证至多一个分支 ----------------
 wire        eq0         = (s0.alu_src1 == s0.rkd_value);
