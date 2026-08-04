@@ -8,7 +8,7 @@
 
 处理器采用九级流水线结构，配合透明 Cache 层次与片外 SRAM 控制器。
 
-整个 SoC 使用统一的 cpu_clk = 112.5 MHz.
+整个 SoC 使用统一的 cpu_clk = 120 MHz.
 
 CPU 接口通过类 SRAM 协议直接对接 BaseRAM、ExtRAM 与串口内存映射空间。
 

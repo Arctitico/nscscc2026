@@ -53,7 +53,10 @@ data_wr_req/addr/strb/data -> data_wr_ok
 
 EX1 另输出只依赖本级寄存 payload 的 `store_pending` 窄令牌。D-cache 用它在 store 真正发出前阻止新的 I-cache miss 越过，不把 `EX2_allow_in` 或 `data_addr_ok` 串入取指到 SRAM 引脚的控制链；数据请求握手和访问拍数不变。
 
-当前默认物理要求为读 `20 ns`、写脉冲 `20 ns`、写后保持 `1` 拍。`build_fpga.sh` 按 PLL 实际频率把前两项向上取整为整数周期；90 MHz 签核基线得到 `2/2/1` 拍，即约 `22.22/22.22/11.11 ns`。
+正式板级构建固定为读 2 拍、写 2 拍、写后保持 1 拍。
+`build_fpga.sh` 不再按纳秒换算，也不接受其它 SRAM 构建配置；120 MHz
+下等效窗口为 `16.6667/16.6667/8.3333 ns`。RTL 参数仍保留，供
+`sim_soc` 的协议边界回归覆盖其它拍数组合。
 
 协议状态机使用同步复位，只有直接连接 SRAM 的地址、控制、写数据和三态使能寄存器使用异步复位。PLL 未锁定或 CPU reset 有效时，物理 `CE#`、`OE#`、`WE#` 与数据驱动必须立即撤销；不要重新在顶层加入高扇出的组合 reset 门控。
 
@@ -87,10 +90,13 @@ make lint
 
 ```bash
 cd ..
-./build_fpga.sh --freq 90 --print-config
-./build_fpga.sh --freq 90 --recreate-project
+./build_fpga.sh --freq 120 --print-config
+./build_fpga.sh --freq 120 --recreate-project
 ```
 
 `fpga/create_project.tcl` 以官方 CI 相同的 `xc7a200tfbg676-2` 为目标，只收集当前 CPU 与直连 SoC 所需模块，不加入 `core_top.sv` 或 `cpu_axi_bridge.sv`。`board_clock.sv` 直接例化 `PLLE2_ADV`，因此也不依赖外部 XCI/DCP。引脚、PLL 生成时钟和 SRAM I/O delay 均由仓内 `fpga/constraints/soc.xdc` 约束。
 
-当前 90 MHz 基线 STA 为 WNS `+0.194 ns`、TNS `0`、WHS `+0.055 ns`；网站六项全部 100 分。92.5 MHz 只有 `+0.010 ns` 级 setup/hold 裕量，不应作为后续开发基线。
+当前正式板级基线为 120 MHz、PLL `24/1/10`、SRAM `2/2/1`。Linux CI
+与本地 fresh route 的 WNS/TNS/WHS 均为
+`+0.035/0/+0.048 ns`，Pipeline `#16764` 的同一 CI 位流已通过真板
+Level1、Level3 和四项性能；35 ps setup 余量不能外推到修改后的新快照。
