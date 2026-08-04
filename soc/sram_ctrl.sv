@@ -31,7 +31,9 @@ module sram_ctrl #(
     (* IOB = "TRUE" *) output reg         ram_ce_n,
     (* IOB = "TRUE" *) output reg         ram_oe_n,
     (* IOB = "TRUE" *) output reg         ram_we_n,
-    (* IOB = "TRUE" *) output reg         ram_wdrive,
+    // Drive only the enabled byte lanes.  Besides avoiding unnecessary bus
+    // activity, this gives each IOB T-register cone only eight loads.
+    (* IOB = "TRUE" *) output reg  [ 3:0] ram_wdrive,
     (* IOB = "TRUE" *) output reg  [31:0] ram_wdat,
     input  wire [31:0] ram_rdat,
 
@@ -45,6 +47,8 @@ module sram_ctrl #(
     output wire        ok,        // 每 beat 一拍（读时同拍 rdata 有效）
     output reg         rd_ok,     // 已按访问类型 one-hot 登记的完成脉冲
     output reg         wr_ok,
+    output reg         rd_ok_inst, // 已在寄存边界按发起方拆分，避免返回后长组合路由
+    output reg         rd_ok_data,
     output wire [31:0] rdata,
     output wire        beat_last, // 突发最后一个 beat（单字时与 ok 同拍）
     output reg         tag_out,
@@ -85,6 +89,9 @@ wire complete_next = accept_one_cycle | advance_to_last_cycle |
 wire complete_next_write =
     (accept_one_cycle & (|wstrb)) |
     (advance_to_last_cycle & write_r);
+// 一拍 SRAM 在接收沿同时更新 tag_out，分类时须直接使用本次 tag_in；
+// 其余完成拍使用已登记且在整次突发期间稳定的 tag_out。
+wire complete_next_tag = accept_one_cycle ? tag_in : tag_out;
 
 assign ok        = ok_q;
 assign beat_last = ok && (widx == len_r);
@@ -95,12 +102,18 @@ always @(posedge clk) begin
         ok_q <= 1'b0;
         rd_ok <= 1'b0;
         wr_ok <= 1'b0;
+        rd_ok_inst <= 1'b0;
+        rd_ok_data <= 1'b0;
     end else begin
         ok_q <= complete_next;
         // 与 ok_q 在同一沿预测并登记访问类型，避免完成返回后再由
         // mem_bridge 的 is_write 状态组合解码。协议周期与 ok 完全相同。
         rd_ok <= complete_next & ~complete_next_write;
         wr_ok <= complete_next_write;
+        rd_ok_inst <= complete_next & ~complete_next_write &
+                      ~complete_next_tag;
+        rd_ok_data <= complete_next & ~complete_next_write &
+                      complete_next_tag;
     end
 end
 
@@ -157,7 +170,7 @@ always @(posedge clk or posedge reset) begin
         ram_be_n   <= 4'hf;
         ram_addr   <= 20'b0;
         ram_wdat   <= 32'b0;
-        ram_wdrive <= 1'b0;
+        ram_wdrive <= 4'b0000;
     end else begin
         case (state)
         S_IDLE: begin
@@ -171,9 +184,9 @@ always @(posedge clk or posedge reset) begin
                 ram_ce_n   <= 1'b0;
                 ram_oe_n   <= (|wstrb) ? 1'b1 : 1'b0;
                 ram_we_n   <= (|wstrb) ? 1'b0 : 1'b1;
-                ram_wdrive <= |wstrb;
+                ram_wdrive <= wstrb;
             end else if (write_hold_count <= 16'd1) begin
-                ram_wdrive <= 1'b0;
+                ram_wdrive <= 4'b0000;
             end
         end
         S_ACC: begin
@@ -182,7 +195,7 @@ always @(posedge clk or posedge reset) begin
                 ram_oe_n <= 1'b1;
                 ram_we_n <= 1'b1;                       // 写：上升沿锁存
                 if (!write_r)
-                    ram_wdrive <= 1'b0;
+                    ram_wdrive <= 4'b0000;
             end else if (cnt == 16'd0) begin
                 // 四字 cache-line 读可从 critical word 开始，只递增低两位，
                 // 例如 word3 后回到同一行的 word0，不向相邻行进位。
@@ -195,7 +208,7 @@ always @(posedge clk or posedge reset) begin
             ram_ce_n   <= 1'b1;
             ram_oe_n   <= 1'b1;
             ram_we_n   <= 1'b1;
-            ram_wdrive <= 1'b0;
+            ram_wdrive <= 4'b0000;
         end
         endcase
     end

@@ -257,6 +257,7 @@ module dcache #(
     input  wire [31:0] cpu_addr,
     input  wire [31:0] cpu_wdata,
     input  wire [31:0] cpu_pc,
+    input  wire        store_pending,
     output wire        cpu_addr_ok,
     output wire [31:0] cpu_rdata,
     output wire        cpu_data_ok,
@@ -460,11 +461,12 @@ assign perf_miss     = (state == S_LOOKUP) & req_cacheable &
 assign perf_wb_stall = (state == S_LOOKUP) & req_cacheable & req_store &
                        ~wb_enq_ready;
 
-// 当前 EX store 尚未入队、以及已经接受但尚未进入写缓冲的 store 都必须
-// 阻止新的 I-cache miss 越过。否则自修改 flush 后可能在 store 真正对外
-// 可见前重填旧指令。
+// EX1 中尚未发出的 store、以及已经接受但尚未进入写缓冲的 store 都必须
+// 阻止新的 I-cache miss 越过。store_pending 只来自 EX1 寄存 payload，
+// 不依赖 EX2 allow/data_addr_ok，避免 completion 反馈到下一 SRAM 请求。
+// 否则自修改 flush 后可能在 store 真正对外可见前重填旧指令。
 wire resident_store = (state != S_IDLE) & req_store;
-assign inst_safe = wb_empty & ~(cpu_req & (|cpu_we)) & ~resident_store;
+assign inst_safe = wb_empty & ~store_pending & ~resident_store;
 
 // ------------------------------ memory ports ------------------------------
 wire refill_req      = (state == S_REFILL);

@@ -49,7 +49,9 @@ data_rd_req/addr -> data_rd_ok + data_rd_data
 data_wr_req/addr/strb/data -> data_wr_ok
 ```
 
-`sram_ctrl.sv` 把请求转换为异步 SRAM 的 `CE/OE/WE/BE` 多周期时序。写结束、`WE#` 上升后，`ram_wdrive` 继续保持一个完整 CPU 周期；地址、字节使能和写数据在该周期内也不更新。物理数据线三态在 `thinpad_top` 处理。
+`sram_ctrl.sv` 把请求转换为异步 SRAM 的 `CE/OE/WE/BE` 多周期时序。写结束、`WE#` 上升后，`ram_wdrive[3:0]` 按有效字节车道继续保持一个完整 CPU 周期；地址、字节使能和写数据在该周期内也不更新。物理数据线三态在 `thinpad_top` 按 8 bit 车道处理。读完成在控制器的同一寄存边界拆成取指/数据两类返回，避免 `tag_out` 再进入跨模块长组合链。
+
+EX1 另输出只依赖本级寄存 payload 的 `store_pending` 窄令牌。D-cache 用它在 store 真正发出前阻止新的 I-cache miss 越过，不把 `EX2_allow_in` 或 `data_addr_ok` 串入取指到 SRAM 引脚的控制链；数据请求握手和访问拍数不变。
 
 当前默认物理要求为读 `20 ns`、写脉冲 `20 ns`、写后保持 `1` 拍。`build_fpga.sh` 按 PLL 实际频率把前两项向上取整为整数周期；90 MHz 签核基线得到 `2/2/1` 拍，即约 `22.22/22.22/11.11 ns`。
 

@@ -117,6 +117,7 @@ wire [ 2:0] ex_data_sram_size;
 wire [31:0] ex_data_sram_addr;
 wire [31:0] ex_data_sram_wdata;
 wire [31:0] ex_data_sram_pc;
+wire        ex_store_pending;
 wire [31:0] ex_data_sram_rdata;
 wire        ex_data_addr_ok;
 wire        ex_data_ok;
@@ -265,6 +266,7 @@ EX1 u_EX1 (
     .data_sram_addr  (ex_data_sram_addr ),
     .data_sram_wdata (ex_data_sram_wdata),
     .data_sram_pc    (ex_data_sram_pc   ),
+    .store_pending   (ex_store_pending  ),
     .data_addr_ok    (ex_data_addr_ok   ),
 
     .perf_data_wait      (perf_ex_addr_wait_event   ),
@@ -356,6 +358,7 @@ dcache u_dcache (
     .cpu_addr     (ex_data_sram_addr     ),
     .cpu_wdata    (ex_data_sram_wdata    ),
     .cpu_pc       (ex_data_sram_pc       ),
+    .store_pending(ex_store_pending      ),
     .cpu_addr_ok  (ex_data_addr_ok       ),
     .cpu_rdata    (ex_data_sram_rdata    ),
     .cpu_data_ok  (ex_data_ok            ),

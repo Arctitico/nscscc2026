@@ -40,14 +40,14 @@ module tb_perf;
     wire        base_ram_ce_n;
     wire        base_ram_oe_n;
     wire        base_ram_we_n;
-    wire        base_ram_wdrive;
+    wire [ 3:0] base_ram_wdrive;
     wire [31:0] base_ram_wdat;
     wire [19:0] ext_ram_addr;
     wire [ 3:0] ext_ram_be_n;
     wire        ext_ram_ce_n;
     wire        ext_ram_oe_n;
     wire        ext_ram_we_n;
-    wire        ext_ram_wdrive;
+    wire [ 3:0] ext_ram_wdrive;
     wire [31:0] ext_ram_wdat;
 
     reg [31:0] base_mem   [0:RAM_WORDS-1];

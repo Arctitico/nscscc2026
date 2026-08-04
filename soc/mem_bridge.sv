@@ -55,7 +55,7 @@ module mem_bridge #(
     output wire        base_ram_ce_n,
     output wire        base_ram_oe_n,
     output wire        base_ram_we_n,
-    output wire        base_ram_wdrive,
+    output wire [ 3:0] base_ram_wdrive,
     output wire [31:0] base_ram_wdat,
     input  wire [31:0] base_ram_rdat,
 
@@ -65,7 +65,7 @@ module mem_bridge #(
     output wire        ext_ram_ce_n,
     output wire        ext_ram_oe_n,
     output wire        ext_ram_we_n,
-    output wire        ext_ram_wdrive,
+    output wire [ 3:0] ext_ram_wdrive,
     output wire [31:0] ext_ram_wdat,
     input  wire [31:0] ext_ram_rdat,
 
@@ -101,6 +101,7 @@ wire [ 2:0] base_len       = base_pick_data ?
 wire        base_tagin     = base_pick_data ? 1'b1 : 1'b0;
 
 wire        base_ok, base_rd_ok, base_wr_ok;
+wire        base_rd_ok_inst, base_rd_ok_data;
 wire        base_beat_last, base_tagout;
 wire [31:0] base_rdata;
 
@@ -117,15 +118,15 @@ sram_ctrl #(
     .req     (base_req     ), .wstrb(base_wstrb), .addr(base_acc_addr),
     .wdata   (data_wr_data), .len(base_len), .tag_in(base_tagin),
     .ok      (base_ok      ), .rd_ok(base_rd_ok), .wr_ok(base_wr_ok),
+    .rd_ok_inst(base_rd_ok_inst), .rd_ok_data(base_rd_ok_data),
     .rdata   (base_rdata), .beat_last(base_beat_last),
     .tag_out (base_tagout  ), .busy(base_busy)
 );
 
 // 取指被授予 Base：本片空闲、取指要、且无访存抢占
 wire base_grant_inst = ~base_busy & inst_base & ~base_pick_data;
-wire base_ret_inst   = base_rd_ok & ~base_tagout;  // 取指 beat
-wire base_rd_ok_data = base_rd_ok &  base_tagout;
-wire base_wr_ok_data = base_wr_ok &  base_tagout;
+wire base_ret_inst   = base_rd_ok_inst;  // 取指 beat
+wire base_wr_ok_data = base_wr_ok;       // SRAM 写请求只来自数据侧
 
 // ================= ExtRAM 仲裁（访存优先；突发原子）=================
 wire        ext_busy;
@@ -142,6 +143,7 @@ wire [ 2:0] ext_len       = ext_pick_data ?
 wire        ext_tagin     = ext_pick_data ? 1'b1 : 1'b0;
 
 wire        ext_ok, ext_rd_ok, ext_wr_ok;
+wire        ext_rd_ok_inst, ext_rd_ok_data;
 wire        ext_beat_last, ext_tagout;
 wire [31:0] ext_rdata;
 
@@ -158,14 +160,14 @@ sram_ctrl #(
     .req     (ext_req     ), .wstrb(ext_wstrb), .addr(ext_acc_addr),
     .wdata   (data_wr_data), .len(ext_len), .tag_in(ext_tagin),
     .ok      (ext_ok      ), .rd_ok(ext_rd_ok), .wr_ok(ext_wr_ok),
+    .rd_ok_inst(ext_rd_ok_inst), .rd_ok_data(ext_rd_ok_data),
     .rdata   (ext_rdata), .beat_last(ext_beat_last),
     .tag_out (ext_tagout  ), .busy(ext_busy)
 );
 
 wire ext_grant_inst = ~ext_busy & inst_ext & ~ext_pick_data;
-wire ext_ret_inst   = ext_rd_ok & ~ext_tagout;
-wire ext_rd_ok_data = ext_rd_ok &  ext_tagout;
-wire ext_wr_ok_data = ext_wr_ok &  ext_tagout;
+wire ext_ret_inst   = ext_rd_ok_inst;
+wire ext_wr_ok_data = ext_wr_ok;
 
 // ---------------- UART（仅访存，单字）----------------
 wire        uart_ok;

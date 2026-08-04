@@ -108,8 +108,8 @@ wire        data_wr_ok;
 
 wire [31:0] base_ram_wdat;
 wire [31:0] ext_ram_wdat;
-wire        base_ram_wdrive;
-wire        ext_ram_wdrive;
+wire [ 3:0] base_ram_wdrive;
+wire [ 3:0] ext_ram_wdrive;
 wire [19:0] base_ram_addr_int;
 wire [ 3:0] base_ram_be_n_int;
 wire        base_ram_ce_n_int;
@@ -130,14 +130,20 @@ assign base_ram_be_n = base_ram_be_n_int;
 assign base_ram_ce_n = base_ram_ce_n_int;
 assign base_ram_oe_n = base_ram_oe_n_int;
 assign base_ram_we_n = base_ram_we_n_int;
-assign base_ram_data = base_ram_wdrive ? base_ram_wdat : 32'bz;
+assign base_ram_data[ 7: 0] = base_ram_wdrive[0] ? base_ram_wdat[ 7: 0] : 8'bz;
+assign base_ram_data[15: 8] = base_ram_wdrive[1] ? base_ram_wdat[15: 8] : 8'bz;
+assign base_ram_data[23:16] = base_ram_wdrive[2] ? base_ram_wdat[23:16] : 8'bz;
+assign base_ram_data[31:24] = base_ram_wdrive[3] ? base_ram_wdat[31:24] : 8'bz;
 
 assign ext_ram_addr = ext_ram_addr_int;
 assign ext_ram_be_n = ext_ram_be_n_int;
 assign ext_ram_ce_n = ext_ram_ce_n_int;
 assign ext_ram_oe_n = ext_ram_oe_n_int;
 assign ext_ram_we_n = ext_ram_we_n_int;
-assign ext_ram_data = ext_ram_wdrive ? ext_ram_wdat : 32'bz;
+assign ext_ram_data[ 7: 0] = ext_ram_wdrive[0] ? ext_ram_wdat[ 7: 0] : 8'bz;
+assign ext_ram_data[15: 8] = ext_ram_wdrive[1] ? ext_ram_wdat[15: 8] : 8'bz;
+assign ext_ram_data[23:16] = ext_ram_wdrive[2] ? ext_ram_wdat[23:16] : 8'bz;
+assign ext_ram_data[31:24] = ext_ram_wdrive[3] ? ext_ram_wdat[31:24] : 8'bz;
 
 wire uart_txd;
 wire uart_rxd = UART_RX;

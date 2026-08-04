@@ -13,7 +13,7 @@ wire [ 3:0] ram_be_n;
 wire        ram_ce_n;
 wire        ram_oe_n;
 wire        ram_we_n;
-wire        ram_wdrive;
+wire [ 3:0] ram_wdrive;
 wire [31:0] ram_wdat;
 // 返回数据编码当前物理地址，同时检查 ram_addr 与 ok beat 没有错拍。
 wire [31:0] ram_rdat = {12'ha5a, ram_addr};
@@ -26,6 +26,8 @@ reg         tag_in = 1'b0;
 wire        ok;
 wire        rd_ok;
 wire        wr_ok;
+wire        rd_ok_inst;
+wire        rd_ok_data;
 wire [31:0] rdata;
 wire        beat_last;
 wire        tag_out;
@@ -57,6 +59,8 @@ sram_ctrl #(
     .ok(ok),
     .rd_ok(rd_ok),
     .wr_ok(wr_ok),
+    .rd_ok_inst(rd_ok_inst),
+    .rd_ok_data(rd_ok_data),
     .rdata(rdata),
     .beat_last(beat_last),
     .tag_out(tag_out),
@@ -73,13 +77,22 @@ endtask
 
 always @(negedge clk) begin
     if (!reset) begin
+        if ((|(ram_wdrive & ram_be_n)) ||
+            ((|ram_wdrive) && (ram_wdrive !== ~ram_be_n)))
+            fail("write-drive byte lanes do not match byte enables");
         if (ok !== (rd_ok | wr_ok))
             fail("one-hot completion pulses do not match ok");
         if (rd_ok && wr_ok)
             fail("read and write completion asserted together");
-        if (ok && ram_wdrive && !wr_ok)
+        if (rd_ok !== (rd_ok_inst | rd_ok_data))
+            fail("read completion was not split by requester");
+        if (rd_ok_inst && (rd_ok_data || tag_out))
+            fail("instruction read completion has wrong tag");
+        if (rd_ok_data && (rd_ok_inst || !tag_out))
+            fail("data read completion has wrong tag");
+        if (ok && (|ram_wdrive) && !wr_ok)
             fail("write completion was not classified as write");
-        if (ok && !ram_wdrive && !rd_ok)
+        if (ok && !(|ram_wdrive) && !rd_ok)
             fail("read completion was not classified as read");
     end
 end
@@ -129,7 +142,7 @@ endtask
 
 task automatic check_read_pins;
 begin
-    if (ram_ce_n || ram_oe_n || !ram_we_n || ram_wdrive)
+    if (ram_ce_n || ram_oe_n || !ram_we_n || (|ram_wdrive))
         fail("wrong read pin direction during burst");
     if (ram_be_n != 4'h0)
         fail("read byte enables are not all active");
@@ -228,7 +241,7 @@ initial begin
 
     // 保留原写脉冲和写后保持检查。
     launch_request(4'b0101, 20'h23456, 32'h0123_4567, 3'd0, 1'b0);
-    if (!ram_oe_n || ram_we_n || !ram_wdrive)
+    if (!ram_oe_n || ram_we_n || (ram_wdrive !== 4'b0101))
         fail("wrong write pin direction");
     expect_first_access_after(WRITE_CYCLES);
     if (!beat_last)
@@ -241,7 +254,7 @@ initial begin
     @(posedge clk);
     #1;
     for (i = 0; i < WRITE_HOLD_CYCLES; i = i + 1) begin
-        if (!ram_we_n || !ram_wdrive)
+        if (!ram_we_n || (ram_wdrive !== 4'b0101))
             fail("write data bus was released during hold");
         if (ram_addr != held_addr || ram_wdat != held_wdata ||
             ram_be_n != held_be_n)
@@ -251,7 +264,7 @@ initial begin
         @(posedge clk);
         #1;
     end
-    if (ram_wdrive || busy || !ram_ce_n)
+    if ((|ram_wdrive) || busy || !ram_ce_n)
         fail("write hold did not finish cleanly");
 
     $display("SRAM CWF TEST PASSED (%0d/%0d/%0d)",

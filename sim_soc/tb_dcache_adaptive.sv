@@ -12,6 +12,7 @@ reg  [ 2:0] cpu_size;
 reg  [31:0] cpu_addr;
 reg  [31:0] cpu_wdata;
 reg  [31:0] cpu_pc;
+reg         store_pending;
 wire        cpu_addr_ok;
 wire [31:0] cpu_rdata;
 wire        cpu_data_ok;
@@ -42,6 +43,7 @@ dcache dut (
     .cpu_addr(cpu_addr),
     .cpu_wdata(cpu_wdata),
     .cpu_pc(cpu_pc),
+    .store_pending(store_pending),
     .cpu_addr_ok(cpu_addr_ok),
     .cpu_rdata(cpu_rdata),
     .cpu_data_ok(cpu_data_ok),
@@ -197,6 +199,7 @@ initial begin
     cpu_addr = 32'b0;
     cpu_wdata = 32'b0;
     cpu_pc = 32'b0;
+    store_pending = 1'b0;
     mem_rdata = 32'b0;
     mem_rd_ok = 1'b0;
     mem_wr_ok = 1'b0;
@@ -204,6 +207,17 @@ initial begin
     repeat (4) @(negedge clk);
     reset = 1'b0;
     repeat (2) @(negedge clk);
+
+    if (!inst_safe)
+        $fatal(1, "idle empty dcache did not allow instruction traffic");
+    store_pending = 1'b1;
+    #1;
+    if (inst_safe)
+        $fatal(1, "EX1 store token did not block instruction traffic");
+    store_pending = 1'b0;
+    #1;
+    if (!inst_safe)
+        $fatal(1, "instruction traffic did not resume after store token");
 
     // Word-only：hint 在 accept 沿锁存；之后即使表项变化，仍走原 size
     // 的单拍读取，不触发 refill，也不分配 cache line。

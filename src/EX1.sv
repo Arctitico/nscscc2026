@@ -49,6 +49,7 @@ module EX1 (
     output wire   [31:0]      data_sram_addr,
     output wire   [31:0]      data_sram_wdata,
     output wire   [31:0]      data_sram_pc,
+    output wire               store_pending,
     input  wire               data_addr_ok,
 
     output wire               perf_data_wait,
@@ -173,6 +174,10 @@ assign data_sram_size  = (stb_sel | (ldw_sel == 4'b0001)) ? 3'b000 : 3'b010;
 assign data_sram_addr  = mem_addr;
 assign data_sram_wdata = st_wdata;
 assign data_sram_pc    = mem_sel1 ? s1.pc : s0.pc;
+// 只取 EX1 的寄存 payload，不串入 EX2 allow 或 D-cache addr_ok。
+// I-cache 用它提前挡住尚未发出的 store，切断 completion→新请求→SRAM IOB
+// 的长组合环；不改变数据请求自身的握手或固定延迟。
+assign store_pending   = ex1_valid & has_mem & st_sel & ~selfmod_flush;
 
 wire ex1_ready_go = ~has_mem | data_addr_ok;
 assign EX1_to_EX2_valid = ex1_valid & ex1_ready_go & ~selfmod_flush;
