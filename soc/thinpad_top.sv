@@ -11,10 +11,10 @@ module thinpad_top #(
 `else
     parameter integer SIMULATION         = 0,
 `endif
-    parameter integer CPU_CLK_HZ          = 112_500_000,
+    parameter integer CPU_CLK_HZ          = 120_000_000,
     parameter integer PLL_DIVCLK_DIVIDE   = 1,
-    parameter integer PLL_CLKFBOUT_MULT   = 18,
-    parameter integer PLL_CLKOUT0_DIVIDE  = 8,
+    parameter integer PLL_CLKFBOUT_MULT   = 24,
+    parameter integer PLL_CLKOUT0_DIVIDE  = 10,
     parameter integer SRAM_READ_CYCLES       = 2,
     parameter integer SRAM_WRITE_CYCLES      = 2,
     parameter integer SRAM_WRITE_HOLD_CYCLES = 1
