@@ -3,9 +3,14 @@
 //
 // 在「真实多周期访存路径」(thinpad_top: mycpu_top + mem_bridge + 异步 SRAM 模型)上
 // 跑随机程序并锁步比对黄金提交流。代码在 BaseRAM，scratch 在 ExtRAM。
-// 激励由 ../sim/randgen.py 生成 (test.hex / golden_trace.hex / golden_mem.hex / golden.meta)。
+// 激励由 ../sim/randgen.py 生成 (test.hex / initial_mem.hex /
+// golden_trace.hex / golden_mem.hex / golden.meta)。
 // ============================================================================
-module tb_soc_rand;
+module tb_soc_rand #(
+    parameter integer SRAM_READ_CYCLES       = 2,
+    parameter integer SRAM_WRITE_CYCLES      = 2,
+    parameter integer SRAM_WRITE_HOLD_CYCLES = 1
+);
     localparam logic [31:0] SCRATCH = 32'h1c40_0000;
     localparam int          DEPTH   = 'h10000;
     localparam int          SCR_W   = 'h00000;
@@ -26,9 +31,9 @@ module tb_soc_rand;
     thinpad_top #(
         .SIMULATION               (1),
         .CPU_CLK_HZ               (50_000_000),
-        .SRAM_READ_CYCLES         (3),
-        .SRAM_WRITE_CYCLES        (3),
-        .SRAM_WRITE_HOLD_CYCLES   (1)
+        .SRAM_READ_CYCLES         (SRAM_READ_CYCLES),
+        .SRAM_WRITE_CYCLES        (SRAM_WRITE_CYCLES),
+        .SRAM_WRITE_HOLD_CYCLES   (SRAM_WRITE_HOLD_CYCLES)
     ) u_dut (
         .clk(clk_50M), .reset(reset_btn),
         .touch_btn(4'b0),  .dip_sw(32'b0),
@@ -115,12 +120,21 @@ module tb_soc_rand;
         for (i = 0; i < DEPTH; i = i + 1) begin base_mem[i] = 32'h0; ext_mem[i] = 32'h0; end
         tptr = 0; errors = 0; started = 0; rxd = 1'b1;
 
-        $readmemh("test.hex",       base_mem);   // 代码 @0x1c000000，scratch @ExtRAM 0
-        $readmemh("golden_mem.hex", g_mem);
         fd = $fopen("golden.meta", "r");
+        if (fd == 0)
+            $fatal(1, "cannot open golden.meta");
         code = $fscanf(fd, "%d %d", ncommit, nmem);
         $fclose(fd);
+        if (code != 2 || ncommit <= 0 || ncommit > MAXT ||
+            nmem <= 0 || nmem > DEPTH)
+            $fatal(1, "invalid golden.meta code=%0d commits=%0d mem=%0d",
+                   code, ncommit, nmem);
+        $readmemh("test.hex", base_mem);   // 代码 @0x1c000000
+        $readmemh("initial_mem.hex", ext_mem, SCR_W, SCR_W + nmem - 1);
+        $readmemh("golden_mem.hex", g_mem, 0, nmem - 1);
         fd = $fopen("golden_trace.hex", "r");
+        if (fd == 0)
+            $fatal(1, "cannot open golden_trace.hex");
         i = 0;
         code = $fscanf(fd, "%h %h %h", t_pc, t_wn, t_wd);
         while (code == 3 && i < MAXT) begin
@@ -128,7 +142,17 @@ module tb_soc_rand;
             code = $fscanf(fd, "%h %h %h", t_pc, t_wn, t_wd);
         end
         $fclose(fd);
-        $display("==== SoC DiffTest 开始: 期望 %0d 条提交, scratch %0d 字 ====", ncommit, nmem);
+        if (i != ncommit)
+            $fatal(1, "trace 行数 %0d 与 meta ncommit %0d 不符",
+                   i, ncommit);
+        if (SRAM_READ_CYCLES < 1 || SRAM_WRITE_CYCLES < 1 ||
+            SRAM_WRITE_HOLD_CYCLES < 0)
+            $fatal(1, "invalid SRAM cycles %0d/%0d/%0d",
+                   SRAM_READ_CYCLES, SRAM_WRITE_CYCLES,
+                   SRAM_WRITE_HOLD_CYCLES);
+        $display("==== SoC DiffTest 开始: 期望 %0d 条提交, scratch %0d 字, SRAM %0d/%0d/%0d ====",
+                 ncommit, nmem, SRAM_READ_CYCLES, SRAM_WRITE_CYCLES,
+                 SRAM_WRITE_HOLD_CYCLES);
 
         reset_btn = 1;
         repeat (8) @(posedge clk_50M);

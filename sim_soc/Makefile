@@ -26,6 +26,11 @@ SOC_SRCS = $(SOC_DIR)/sram_ctrl.sv $(SOC_DIR)/uart_phy.sv $(SOC_DIR)/uart_mm.sv 
 
 SRCS = $(CPU_SRCS) $(SOC_SRCS)
 
+.PHONY: run rand fuzz fuzz-sram-331 supervisor perf-images perf-build \
+        perf-simple perf-stream perf-matrix perf-mixed perf-cryptonight \
+        perf-all level1 uart write-buffer icache-selfmod selfmod \
+        dcache-policy dcache-adaptive sram-timing lint clean
+
 VFLAGS = --binary --timing --top-module tb_soc -o Vtb_soc \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
@@ -38,14 +43,25 @@ run:
 	./obj_dir/Vtb_soc
 
 # ---- 随机指令 DiffTest (复用 ../sim/randgen.py) ----
-# 用法: make rand SEED=42 N=120 ; make fuzz COUNT=30
+# 用法: make rand SEED=42 N=120 ; make fuzz START_SEED=1 COUNT=30
+#       make fuzz-sram-331 COUNT=30   (额外延迟 A/B)
 SEED  ?= 1
 N     ?= 120
 COUNT ?= 30
+START_SEED ?= 1
 MR    ?= 0.30
 BR    ?= 0.0
-GENFLAGS = --mem-ratio $(MR) --branch-ratio $(BR)
+WINDOW ?= 64
+INIT_MODE ?= random
+SRAM_READ_CYCLES ?= 2
+SRAM_WRITE_CYCLES ?= 2
+SRAM_WRITE_HOLD_CYCLES ?= 1
+GENFLAGS = --mem-ratio $(MR) --branch-ratio $(BR) --window $(WINDOW) \
+           --init-mode $(INIT_MODE)
 RFLAGS = --binary --timing --top-module tb_soc_rand -o Vtb_soc_rand \
+         -GSRAM_READ_CYCLES=$(SRAM_READ_CYCLES) \
+         -GSRAM_WRITE_CYCLES=$(SRAM_WRITE_CYCLES) \
+         -GSRAM_WRITE_HOLD_CYCLES=$(SRAM_WRITE_HOLD_CYCLES) \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
          -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-PINMISSING
@@ -101,7 +117,7 @@ PERF_MIXED_OUT    = perf_mixed_expected.hex
 PERF_CRYPTO_OUT   = perf_crypto_expected.hex
 
 rand:
-	python3 ../sim/randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
+	python3 ../sim/randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) --quiet
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
 	./obj_dir/Vtb_soc_rand
 
@@ -204,21 +220,24 @@ sram-timing:
 
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
-	@for s in $$(seq 1 $(COUNT)); do \
-	    python3 ../sim/randgen.py --seed $$s --n $(N) $(GENFLAGS) 2>/dev/null; \
-	    out=$$(./obj_dir/Vtb_soc_rand); \
-	    if echo "$$out" | grep -q "SOC RAND TEST PASSED"; then \
-	        echo "seed $$s: PASS"; \
-	    else \
-	        echo "seed $$s: FAIL"; echo "$$out"; \
-	        echo "==> 复现: make rand SEED=$$s N=$(N)"; exit 1; \
-	    fi; \
-	done; \
-	echo "==== ALL $(COUNT) SEEDS PASSED ===="
+	python3 ../sim/fuzz.py \
+	    --generator ../sim/randgen.py --simulator ./obj_dir/Vtb_soc_rand \
+	    --pass-marker "SOC RAND TEST PASSED" \
+	    --start-seed $(START_SEED) --count $(COUNT) --n $(N) \
+	    --window $(WINDOW) --mem-ratio $(MR) --branch-ratio $(BR) \
+	    --init-mode $(INIT_MODE) \
+	    --repro-extra SRAM_READ_CYCLES=$(SRAM_READ_CYCLES) \
+	    --repro-extra SRAM_WRITE_CYCLES=$(SRAM_WRITE_CYCLES) \
+	    --repro-extra SRAM_WRITE_HOLD_CYCLES=$(SRAM_WRITE_HOLD_CYCLES)
+
+fuzz-sram-331:
+	$(MAKE) fuzz SRAM_READ_CYCLES=3 SRAM_WRITE_CYCLES=3 \
+	    SRAM_WRITE_HOLD_CYCLES=1
 
 lint:
 	verilator --lint-only --top-module thinpad_top -GSIMULATION=1 \
 		-Wno-WIDTHTRUNC -Wno-WIDTHEXPAND $(SRCS)
 
 clean:
-	rm -rf obj_dir test.hex selfmod.hex level1.hex kernel.hex golden_trace.hex golden_mem.hex golden.meta
+	rm -rf obj_dir test.hex initial_mem.hex selfmod.hex level1.hex kernel.hex \
+	    golden_trace.hex golden_mem.hex golden.meta random.meta

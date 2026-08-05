@@ -14,7 +14,9 @@
 #   test.hex          —— 指令字, $readmemh 装载到 0x1c000000
 #   golden_trace.hex  —— 每行 "<pc> <wnum> <wdata>" (hex), 即期望提交流
 #   golden_mem.hex    —— scratch 区(0x1c400000 起)最终镜像, 每行一字(hex)
+#   initial_mem.hex   —— scratch 区初始镜像
 #   golden.meta       —— "ncommit nmemword" 两个十进制数, 供 tb 读取计数
+#   random.meta       —— seed/生成参数 JSON，供批量入口检查向量新鲜度
 #   并向 stderr 打印可读清单。
 #
 # 关键约定(与 RTL 对齐, 见 decoder.sv / regfile.sv / CM.sv):
@@ -23,11 +25,15 @@
 #   - 寄存器复位初值视为 0 (Verilator 2-state 默认 0 初始化, 与黄金模型一致)。
 #   - scratch 区固定从 ExtRAM 0x1c400000 开始，字访存 4 对齐、字节访存任意。
 # ============================================================================
-import sys, argparse, random
+import argparse
+import json
+import random
+import sys
 
 BASE        = 0x1C000000          # 代码装载基址 / 复位 PC
 SCRATCH     = 0x1C400000          # ExtRAM scratch 基址 (放进 r31)
 SCRATCH_REG = 31                  # 保留作基址指针, 不作 dest
+MAX_RANDOM_INSTRUCTIONS = 65533   # 64K-word TB code memory minus prologue/halt
 
 # ---- 编码助手(与 asm.py 同一套底层编码) ----
 def i12(x): return x & 0xFFF
@@ -54,6 +60,37 @@ def sext(v, bits):
     m = 1 << (bits-1)
     return (v ^ m) - m
 def u32(v): return v & 0xFFFFFFFF
+
+
+def positive_int(text):
+    value = int(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be > 0")
+    return value
+
+
+def instruction_count(text):
+    value = positive_int(text)
+    if value > MAX_RANDOM_INSTRUCTIONS:
+        raise argparse.ArgumentTypeError(
+            "must be <= %d (testbench code-memory limit)" %
+            MAX_RANDOM_INSTRUCTIONS)
+    return value
+
+
+def window_words(text):
+    value = positive_int(text)
+    # 访存使用有符号 i12，正偏移最大为 2047 byte。
+    if value > 512:
+        raise argparse.ArgumentTypeError("must be <= 512 words")
+    return value
+
+
+def ratio(text):
+    value = float(text)
+    if not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError("must be in [0, 1]")
+    return value
 
 # ============================================================================
 # 黄金模型: 对 32 位指令字独立译码 + 执行
@@ -255,20 +292,39 @@ def gen(seed, n, window_words, mem_ratio, branch_ratio=0.0):
     words = [w & 0xFFFFFFFF for w in words]
     return words, asm, win_bytes
 
+
+def initial_words(seed, count, mode):
+    if mode == "zero":
+        return [0] * count
+    # 与指令 RNG 分离，新增初值覆盖不会悄悄改变既有 seed 的指令序列。
+    rng = random.Random(seed ^ 0x9E3779B97F4A7C15)
+    return [rng.getrandbits(32) for _ in range(count)]
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--n", type=int, default=120, help="随机指令条数(不含序言/结尾)")
-    ap.add_argument("--window", type=int, default=64, help="scratch 窗口字数")
-    ap.add_argument("--mem-ratio", type=float, default=0.30, help="访存指令占比")
-    ap.add_argument("--branch-ratio", type=float, default=0.0, help="前向 b/beq/bne 占比")
+    ap.add_argument("--n", type=instruction_count, default=120,
+                    help="随机指令条数(不含序言/结尾)")
+    ap.add_argument("--window", type=window_words, default=64,
+                    help="scratch 窗口字数(1..512)")
+    ap.add_argument("--mem-ratio", type=ratio, default=0.30,
+                    help="访存指令占比")
+    ap.add_argument("--branch-ratio", type=ratio, default=0.0,
+                    help="前向 b/beq/bne 占比")
+    ap.add_argument("--init-mode", choices=("random", "zero"), default="random",
+                    help="scratch 初值模式")
     ap.add_argument("--out-dir", default=".")
+    ap.add_argument("--quiet", action="store_true",
+                    help="不打印逐条指令清单")
     args = ap.parse_args()
 
     words, asm, win_bytes = gen(args.seed, args.n, args.window,
                                 args.mem_ratio, args.branch_ratio)
+    init = initial_words(args.seed, args.window, args.init_mode)
 
     g = Golden()
+    for index, value in enumerate(init):
+        g.sw(SCRATCH + index * 4, value)
     g.run(words)
 
     od = args.out_dir.rstrip("/")
@@ -278,19 +334,38 @@ def main():
         for pc, rd, val in g.trace:
             f.write("%08x %02x %08x\n" % (pc, rd, val))
     memwords = args.window
+    with open(od + "/initial_mem.hex", "w") as f:
+        for value in init:
+            f.write("%08x\n" % value)
     with open(od + "/golden_mem.hex", "w") as f:
         for k in range(memwords):
             f.write("%08x\n" % g.lw(SCRATCH + k*4))
     with open(od + "/golden.meta", "w") as f:
         f.write("%d %d\n" % (len(g.trace), memwords))
+    metadata = {
+        "branch_ratio": args.branch_ratio,
+        "init_mode": args.init_mode,
+        "mem_ratio": args.mem_ratio,
+        "n": args.n,
+        "schema": 1,
+        "seed": args.seed,
+        "window": args.window,
+    }
+    with open(od + "/random.meta", "w") as f:
+        json.dump(metadata, f, sort_keys=True)
+        f.write("\n")
 
     # 可读清单到 stderr
-    pc = BASE
-    for (m, a), w in zip(asm, words):
-        sys.stderr.write("0x%08x: %08x  %-10s %s\n" % (pc, w, m, a))
-        pc += 4
-    sys.stderr.write("seed=%d n=%d commits=%d memwords=%d scratch=%08x window=%dB\n"
-                     % (args.seed, args.n, len(g.trace), memwords, SCRATCH, win_bytes))
+    if not args.quiet:
+        pc = BASE
+        for (m, a), w in zip(asm, words):
+            sys.stderr.write("0x%08x: %08x  %-10s %s\n" %
+                             (pc, w, m, a))
+            pc += 4
+        sys.stderr.write(
+            "seed=%d n=%d commits=%d memwords=%d scratch=%08x window=%dB init=%s\n"
+            % (args.seed, args.n, len(g.trace), memwords, SCRATCH,
+               win_bytes, args.init_mode))
 
 if __name__ == "__main__":
     main()

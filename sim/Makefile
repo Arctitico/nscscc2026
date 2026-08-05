@@ -9,6 +9,9 @@ SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR)/mu
        $(SRC_DIR)/IS.sv $(SRC_DIR)/RF.sv $(SRC_DIR)/EX1.sv $(SRC_DIR)/EX2.sv \
        $(SRC_DIR)/CM.sv $(SRC_DIR)/mycpu_top.sv
 
+.PHONY: run lint rand fuzz p1-regress mul-pipe late-bypass waw-raw \
+        intra-raw control-flow clean
+
 VFLAGS = --binary --timing --top-module tb -o Vtb \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC
@@ -20,7 +23,7 @@ run:
 	./obj_dir/Vtb
 
 lint:
-	verilator --lint-only --top-module mycpu_top $(SRCS)
+	verilator --lint-only --top-module mycpu_top -Wno-WIDTHEXPAND $(SRCS)
 
 # ---- 随机指令 DiffTest ----
 # 用法: make rand            (默认 SEED=1)
@@ -30,17 +33,22 @@ lint:
 #       make mul-pipe        (连续 MUL II=1 + RAW/前递定向验证)
 #       make late-bypass     (load->store-data 晚旁路及地址依赖互锁)
 #       make waw-raw         (年轻 ready WAW 覆盖老 pending producer)
+#       make intra-raw       (专用 SLL->ADD/XOR bundle 内 RAW 契约)
+#       make control-flow    (bl/jirl/r0/反向循环)
 SEED  ?= 1
 N     ?= 120
 MR    ?= 0.30
 BR    ?= 0.0
-GENFLAGS = --mem-ratio $(MR) --branch-ratio $(BR)
+WINDOW ?= 64
+INIT_MODE ?= random
+GENFLAGS = --mem-ratio $(MR) --branch-ratio $(BR) --window $(WINDOW) \
+           --init-mode $(INIT_MODE)
 RFLAGS = --binary --timing --top-module tb_rand -o Vtb_rand \
          -Wno-WIDTH -Wno-DECLFILENAME -Wno-UNUSED -Wno-VARHIDDEN \
          -Wno-EOFNEWLINE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC
 
 rand:
-	python3 randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) 2>/dev/null
+	python3 randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) --quiet
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
 	./obj_dir/Vtb_rand
 
@@ -61,21 +69,28 @@ waw-raw:
 	python3 fifo_regress.py --case waw_raw_mul >/dev/null
 	./obj_dir/Vtb_rand +CHECK_WAW_RAW +EXPECT_WAW_MUL
 
-# 编译一次, 循环换 seed 重新生成激励并跑 (COUNT 个种子)
+intra-raw:
+	python3 fifo_regress.py --case intra_raw >/dev/null
+	verilator $(RFLAGS) $(SRCS) tb_rand.sv
+	./obj_dir/Vtb_rand +CHECK_INTRA_RAW +SLOW_DATA_RESPONSE $(INTRA_ARGS)
+
+control-flow:
+	python3 fifo_regress.py --case control_flow >/dev/null
+	verilator $(RFLAGS) $(SRCS) tb_rand.sv
+	./obj_dir/Vtb_rand
+
+# 编译一次，循环换 seed 重新生成激励并跑。共享 runner 会逐轮删除旧向量、
+# 检查生成器/模拟器退出码、PASS marker 以及 random.meta 的 seed/参数。
 COUNT ?= 50
+START_SEED ?= 1
 fuzz:
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
-	@for s in $$(seq 1 $(COUNT)); do \
-	    python3 randgen.py --seed $$s --n $(N) $(GENFLAGS) 2>/dev/null; \
-	    out=$$(./obj_dir/Vtb_rand); \
-	    if echo "$$out" | grep -q "RAND TEST PASSED"; then \
-	        echo "seed $$s: PASS"; \
-	    else \
-	        echo "seed $$s: FAIL"; echo "$$out"; \
-	        echo "==> 复现: make rand SEED=$$s N=$(N) MR=$(MR) BR=$(BR)"; exit 1; \
-	    fi; \
-	done; \
-	echo "==== ALL $(COUNT) SEEDS PASSED ===="
+	python3 fuzz.py \
+	    --generator ./randgen.py --simulator ./obj_dir/Vtb_rand \
+	    --pass-marker "RAND TEST PASSED" \
+	    --start-seed $(START_SEED) --count $(COUNT) --n $(N) \
+	    --window $(WINDOW) --mem-ratio $(MR) --branch-ratio $(BR) \
+	    --init-mode $(INIT_MODE)
 
 P1_COUNT ?= 20
 P1_N     ?= 300
@@ -92,19 +107,15 @@ p1-regress:
 	        echo "directed $$c: FAIL"; printf '%s\n' "$$out"; \
 	        echo "==> 复现: python3 fifo_regress.py --case $$c && ./obj_dir/Vtb_rand"; exit 1; \
 	    fi; \
-	done; \
-	for s in $$(seq 1 $(P1_COUNT)); do \
-	    python3 randgen.py --seed $$s --n $(P1_N) \
-	        --mem-ratio 0.55 --branch-ratio 0.12 2>/dev/null; \
-	    out=$$(./obj_dir/Vtb_rand); \
-	    if printf '%s\n' "$$out" | grep -q "RAND TEST PASSED"; then \
-	        echo "stress seed $$s: PASS"; \
-	    else \
-	        echo "stress seed $$s: FAIL"; printf '%s\n' "$$out"; \
-	        echo "==> 复现: make rand SEED=$$s N=$(P1_N) MR=0.55 BR=0.12"; exit 1; \
-	    fi; \
-	done; \
-	echo "==== FIFO P1 REGRESSION PASSED: $(words $(P1_CASES)) directed + $(P1_COUNT) random ===="
+	done
+	python3 fuzz.py \
+	    --generator ./randgen.py --simulator ./obj_dir/Vtb_rand \
+	    --pass-marker "RAND TEST PASSED" \
+	    --start-seed 1 --count $(P1_COUNT) --n $(P1_N) \
+	    --window $(WINDOW) --mem-ratio 0.55 --branch-ratio 0.12 \
+	    --init-mode $(INIT_MODE)
+	@echo "==== FIFO P1 REGRESSION PASSED: $(words $(P1_CASES)) directed + $(P1_COUNT) random ===="
 
 clean:
-	rm -rf obj_dir test.hex golden_trace.hex golden_mem.hex golden.meta
+	rm -rf obj_dir test.hex initial_mem.hex golden_trace.hex golden_mem.hex \
+	    golden.meta random.meta

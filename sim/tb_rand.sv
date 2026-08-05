@@ -4,8 +4,8 @@
 // 与 tb.sv 共用同一行为级组合读内存模型, 但自检改为「锁步比对黄金提交流」:
 //   每拍 CPU 提交(debug_wb_rf_we!=0) 与 golden_trace.hex 的下一条 (pc,wnum,wdata)
 //   逐条比对, 首个不一致即报当前 pc 并停止; 运行结束再比对 scratch 内存镜像。
-// 程序与黄金参考由 randgen.py 生成 (test.hex / golden_trace.hex / golden_mem.hex /
-// golden.meta)。
+// 程序与黄金参考由 randgen.py 生成 (test.hex / initial_mem.hex /
+// golden_trace.hex / golden_mem.hex / golden.meta)。
 // ============================================================================
 module tb_rand;
     localparam logic [31:0] SCRATCH = 32'h1c40_0000;
@@ -62,6 +62,7 @@ module tb_rand;
     endfunction
     reg        ractive, rline, wactive;
     reg [ 2:0] rbeat;
+    reg [ 4:0] rwait;
     reg [31:0] rbase;
     // CWF line reads start at the requested word and wrap inside the same
     // 16-byte line, matching soc/sram_ctrl.sv.  The old linear addition
@@ -72,7 +73,7 @@ module tb_rand;
                            : rbase;
     wire rdaccept = data_rd_req & ~ractive;
     wire wraccept = data_wr_req & ~wactive;
-    assign data_rd_ok = ractive;
+    assign data_rd_ok = ractive & (rwait == 0);
     assign data_wr_ok = wactive;
     assign data_rd_data = is_base(rbeat_addr) ? base_mem[idx(rbeat_addr)] :
                           is_ext(rbeat_addr)  ? ext_mem[idx(rbeat_addr)]  : 32'h0;
@@ -101,14 +102,19 @@ module tb_rand;
             ractive <= 1'b0;
             wactive <= 1'b0;
             rbeat   <= 3'd0;
+            rwait   <= 5'd0;
         end else begin
             if (rdaccept) begin
                 ractive <= 1'b1;
                 rline   <= (data_rd_size == 3'b100);
                 rbeat   <= 3'd0;
                 rbase   <= data_rd_addr;
+                rwait   <= $test$plusargs("SLOW_DATA_RESPONSE") ?
+                           5'd20 : 5'd0;
             end else if (ractive) begin
-                if (rline && (rbeat != 3'd3))
+                if (rwait != 0)
+                    rwait <= rwait - 5'd1;
+                else if (rline && (rbeat != 3'd3))
                     rbeat <= rbeat + 3'd1;
                 else
                     ractive <= 1'b0;
@@ -153,6 +159,18 @@ module tb_rand;
     integer waw_raw_mul_observations;
     integer waw_raw_transfer_opportunities;
     integer waw_raw_transfers;
+    integer intra_rj_only;
+    integer intra_rkd_only;
+    integer intra_dual_source;
+    integer intra_zero_dest_pairs;
+    integer intra_same_rd_waw;
+    integer intra_old_load_shadow;
+    integer intra_old_mul_shadow;
+    integer intra_streak;
+    integer intra_max_streak;
+    integer intra_redirects;
+    integer intra_redirect_targets;
+    integer intra_poison_fires;
     localparam logic [31:0] LATE_ADDR_TARGET = SCRATCH + 32'd32;
     localparam logic [31:0] LATE_ADDR_VALUE  = 32'h0000_05a5;
 
@@ -196,6 +214,46 @@ module tb_rand;
         (waw_raw_ex1_shadow & u_cpu.u_EX1.s0.is_mul) |
         (waw_raw_ex2_shadow & u_cpu.u_EX2.s0.is_mul);
 
+    // The dedicated regression observes actual EX1 transfers, not just adjacent
+    // instruction words.  This proves that the SLL->ADD/XOR contract reaches
+    // the execute fast path with each source shape and under older WAW shadows.
+    wire intra_ex1_transfer = u_cpu.u_EX1.ex1_fire &
+                              u_cpu.u_EX1.ex1_r.v1;
+    wire intra_dep_rj = u_cpu.u_EX1.ex1_r.s1_dep_rj_from_s0;
+    wire intra_dep_rkd = u_cpu.u_EX1.ex1_r.s1_dep_rkd_from_s0;
+    wire intra_fast_transfer = intra_ex1_transfer &
+                               (intra_dep_rj | intra_dep_rkd);
+    wire intra_zero_dest_transfer =
+        intra_ex1_transfer &
+        u_cpu.u_EX1.s0.alu_op[8] &
+        (u_cpu.u_EX1.s0.rf_waddr == 5'b0) &
+        (u_cpu.u_EX1.s1.alu_op[0] | u_cpu.u_EX1.s1.alu_op[7]) &
+        ~(intra_dep_rj | intra_dep_rkd);
+
+    wire intra_rf_bundle =
+        u_cpu.u_RF.rf_valid & u_cpu.u_RF.idp.v1 &
+        (u_cpu.u_RF.s1_dep_rj_from_s0 |
+         u_cpu.u_RF.s1_dep_rkd_from_s0);
+    wire [4:0] intra_rf_producer = u_cpu.u_RF.db0.rf_waddr;
+    wire intra_old_ex1_s0 =
+        intra_rf_bundle &
+        (intra_rf_producer != 5'b0) &
+        u_cpu.ex1_fwd0.valid & u_cpu.ex1_fwd0.rf_we &
+        ~u_cpu.ex1_fwd0.result_ready &
+        (u_cpu.ex1_fwd0.rf_waddr == intra_rf_producer);
+    wire intra_old_ex2_s0 =
+        intra_rf_bundle &
+        (intra_rf_producer != 5'b0) &
+        u_cpu.ex2_fwd0.valid & u_cpu.ex2_fwd0.rf_we &
+        ~u_cpu.ex2_fwd0.result_ready &
+        (u_cpu.ex2_fwd0.rf_waddr == intra_rf_producer);
+    wire intra_old_load =
+        (intra_old_ex1_s0 & u_cpu.u_EX1.s0.is_ld) |
+        (intra_old_ex2_s0 & u_cpu.u_EX2.s0.is_mem);
+    wire intra_old_mul =
+        (intra_old_ex1_s0 & u_cpu.u_EX1.s0.is_mul) |
+        (intra_old_ex2_s0 & u_cpu.u_EX2.s0.is_mul);
+
     task automatic check_commit(input [31:0] cpc, input [4:0] cwn, input [31:0] cwd);
         if (tptr >= ncommit) begin
             $display("  FAIL extra commit #%0d pc=%08x r%0d<=%08x (golden 已耗尽, 期望 %0d 条)",
@@ -225,6 +283,18 @@ module tb_rand;
             waw_raw_mul_observations = 0;
             waw_raw_transfer_opportunities = 0;
             waw_raw_transfers = 0;
+            intra_rj_only = 0;
+            intra_rkd_only = 0;
+            intra_dual_source = 0;
+            intra_zero_dest_pairs = 0;
+            intra_same_rd_waw = 0;
+            intra_old_load_shadow = 0;
+            intra_old_mul_shadow = 0;
+            intra_streak = 0;
+            intra_max_streak = 0;
+            intra_redirects = 0;
+            intra_redirect_targets = 0;
+            intra_poison_fires = 0;
         end else begin
             if (|debug_wb_rf_we)  check_commit(debug_wb_pc, debug_wb_rf_wnum, debug_wb_rf_wdata);
             if (|debug_wb1_rf_we) check_commit(debug_wb1_pc, debug_wb1_rf_wnum, debug_wb1_rf_wdata);
@@ -318,6 +388,71 @@ module tb_rand;
                     end
                 end
             end
+            if ($test$plusargs("CHECK_INTRA_RAW")) begin
+                if ($test$plusargs("TRACE_INTRA_RAW") &
+                    (intra_fast_transfer | intra_zero_dest_transfer))
+                    $display("[INTRA EX1] pc=%08x/%08x rd=%0d/%0d dep=%0b/%0b",
+                             u_cpu.u_EX1.s0.pc, u_cpu.u_EX1.s1.pc,
+                             u_cpu.u_EX1.s0.rf_waddr,
+                             u_cpu.u_EX1.s1.rf_waddr,
+                             intra_dep_rj, intra_dep_rkd);
+                if ($test$plusargs("TRACE_INTRA_RAW") & intra_rf_bundle)
+                    $display("[INTRA RF] pc=%08x/%08x rd=%0d old=%0b load=%0b mul=%0b stall=%0b transfer=%0b",
+                             u_cpu.u_RF.idp.s0.pc, u_cpu.u_RF.idp.s1.pc,
+                             intra_rf_producer,
+                             intra_old_ex1_s0 | intra_old_ex2_s0,
+                             intra_old_load, intra_old_mul,
+                             u_cpu.u_RF.rf_dependency_stall,
+                             u_cpu.RF_to_EX1_valid & u_cpu.EX1_allow_in);
+                if (intra_fast_transfer) begin
+                    intra_streak = intra_streak + 1;
+                    if (intra_streak > intra_max_streak)
+                        intra_max_streak = intra_streak;
+                    if (intra_dep_rj & intra_dep_rkd)
+                        intra_dual_source = intra_dual_source + 1;
+                    else if (intra_dep_rj)
+                        intra_rj_only = intra_rj_only + 1;
+                    else
+                        intra_rkd_only = intra_rkd_only + 1;
+                    if (u_cpu.u_EX1.s0.rf_waddr ==
+                        u_cpu.u_EX1.s1.rf_waddr)
+                        intra_same_rd_waw = intra_same_rd_waw + 1;
+                    // r22 marks the first valid pair at the redirect target.
+                    if (u_cpu.u_EX1.s0.rf_waddr == 5'd22)
+                        intra_redirect_targets =
+                            intra_redirect_targets + 1;
+                end else begin
+                    intra_streak = 0;
+                end
+                if (intra_zero_dest_transfer)
+                    intra_zero_dest_pairs = intra_zero_dest_pairs + 1;
+                // r29 is reserved for the wrong-path producer.  Count any
+                // valid EX1 transfer, even if broken dependency metadata means
+                // the pair no longer qualifies as the fast path.
+                if (intra_ex1_transfer &
+                    (u_cpu.u_EX1.s0.rf_waddr == 5'd29)) begin
+                    intra_poison_fires = intra_poison_fires + 1;
+                    $display("  FAIL wrong-path intra-RAW producer reached EX1");
+                    errors = errors + 1;
+                end
+                if (u_cpu.redirect)
+                    intra_redirects = intra_redirects + 1;
+
+                if (intra_old_load) begin
+                    intra_old_load_shadow = intra_old_load_shadow + 1;
+                    if (u_cpu.u_RF.rf_dependency_stall) begin
+                        $display("  FAIL older load blocked younger intra-RAW producer");
+                        errors = errors + 1;
+                    end
+                end
+                if (intra_old_mul) begin
+                    intra_old_mul_shadow = intra_old_mul_shadow + 1;
+                    if (u_cpu.u_RF.rf_dependency_stall) begin
+                        $display("  FAIL older MUL blocked younger intra-RAW producer");
+                        errors = errors + 1;
+                    end
+                end
+            end
             if ($test$plusargs("trace_mem") && data_wr_req)
                 $display("[STORE] pc0=%08x pc1=%08x v1=%0b addr=%08x we=%x data=%08x",
                          u_cpu.u_EX2.s0.pc, u_cpu.u_EX2.s1.pc, u_cpu.u_EX2.ex_v1_eff,
@@ -348,14 +483,24 @@ module tb_rand;
         for (i = 0; i < DEPTH; i = i + 1) begin base_mem[i] = 32'h0; ext_mem[i] = 32'h0; end
         tptr = 0; errors = 0;
 
-        $readmemh("test.hex",       base_mem);
-        $readmemh("golden_mem.hex", g_mem);
         // 读 meta: "ncommit nmem"
         fd = $fopen("golden.meta", "r");
+        if (fd == 0)
+            $fatal(1, "cannot open golden.meta");
         code = $fscanf(fd, "%d %d", ncommit, nmem);
         $fclose(fd);
+        if (code != 2 || ncommit <= 0 || ncommit > MAXT ||
+            nmem <= 0 || nmem > DEPTH)
+            $fatal(1, "invalid golden.meta code=%0d commits=%0d mem=%0d",
+                   code, ncommit, nmem);
+        $readmemh("test.hex", base_mem);
+        $readmemh("initial_mem.hex", ext_mem, idx(SCRATCH),
+                  idx(SCRATCH) + nmem - 1);
+        $readmemh("golden_mem.hex", g_mem, 0, nmem - 1);
         // 读提交流: 每行 "<pc> <wnum> <wdata>" (hex)
         fd = $fopen("golden_trace.hex", "r");
+        if (fd == 0)
+            $fatal(1, "cannot open golden_trace.hex");
         i = 0;
         code = $fscanf(fd, "%h %h %h", t_pc, t_wn, t_wd);
         while (code == 3 && i < MAXT) begin
@@ -365,7 +510,8 @@ module tb_rand;
         end
         $fclose(fd);
         if (i != ncommit) begin
-            $display("WARN: trace 行数 %0d 与 meta ncommit %0d 不符", i, ncommit);
+            $fatal(1, "trace 行数 %0d 与 meta ncommit %0d 不符",
+                   i, ncommit);
         end
         $display("==== DiffTest 开始: 期望 %0d 条提交, scratch %0d 字 ====", ncommit, nmem);
 
@@ -443,6 +589,35 @@ module tb_rand;
                          waw_raw_mul_observations,
                          waw_raw_transfer_opportunities,
                          waw_raw_transfers);
+            end
+        end
+        if ($test$plusargs("CHECK_INTRA_RAW")) begin
+            if (intra_rj_only < 1 ||
+                intra_rkd_only < 1 ||
+                intra_dual_source < 1 ||
+                intra_zero_dest_pairs < 1 ||
+                intra_same_rd_waw < 1 ||
+                intra_old_load_shadow < 1 ||
+                intra_old_mul_shadow < 1 ||
+                intra_max_streak < 3 ||
+                intra_redirects < 1 ||
+                intra_redirect_targets < 1 ||
+                intra_poison_fires != 0) begin
+                $display("  FAIL intra-RAW rj/rkd/dual/r0/waw/load/mul/streak/redirect/target/poison=%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d",
+                         intra_rj_only, intra_rkd_only,
+                         intra_dual_source, intra_zero_dest_pairs,
+                         intra_same_rd_waw, intra_old_load_shadow,
+                         intra_old_mul_shadow, intra_max_streak,
+                         intra_redirects, intra_redirect_targets,
+                         intra_poison_fires);
+                errors = errors + 1;
+            end else begin
+                $display("==== INTRA-RAW PASSED: rj/rkd/dual/r0/waw/load/mul/streak/redirect/target=%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d ====",
+                         intra_rj_only, intra_rkd_only,
+                         intra_dual_source, intra_zero_dest_pairs,
+                         intra_same_rd_waw, intra_old_load_shadow,
+                         intra_old_mul_shadow, intra_max_streak,
+                         intra_redirects, intra_redirect_targets);
             end
         end
 

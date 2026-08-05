@@ -9,9 +9,11 @@ from randgen import (
     Golden,
     OP_3R,
     OP_12,
+    OP_5,
     enc_1ri20,
     enc_2ri12,
     enc_2ri16,
+    enc_2ri5,
     enc_3r,
     enc_i26,
 )
@@ -40,6 +42,9 @@ class Program:
     def alu(self, op, rd, rj, rk):
         self.emit(enc_3r(OP_3R[op], rd, rj, rk))
 
+    def shift(self, op, rd, rj, amount):
+        self.emit(enc_2ri5(OP_5[op], rd, rj, amount))
+
     def load(self, rd, offset):
         self.emit(enc_2ri12(OP_12["ld.w"], rd, 31, offset))
 
@@ -53,6 +58,9 @@ class Program:
         self.fixups.append((len(self.words), op, label, rj, rd))
         self.emit(0)
 
+    def jirl(self, rd, rj, offset=0):
+        self.emit(enc_2ri16(0x4C000000, rd, rj, offset))
+
     def halt(self):
         self.label("halt")
         self.branch("b", "halt")
@@ -65,6 +73,8 @@ class Program:
             offset = self.labels[label] - index
             if op == "b":
                 words[index] = enc_i26(0x50000000, offset)
+            elif op == "bl":
+                words[index] = enc_i26(0x54000000, offset)
             elif op == "beq":
                 words[index] = enc_2ri16(0x58000000, rd, rj, offset)
             elif op == "bne":
@@ -305,9 +315,103 @@ def waw_raw_mul_case():
     return p.resolve()
 
 
+def intra_raw_case():
+    """Exercise every contract edge of the dedicated SLL->ADD/XOR fast path."""
+    p = Program()
+
+    # Keep setup in complete, pairable groups so every following pair starts at
+    # the FIFO head exactly as written.
+    init_scratch(p)
+    p.addi(1, 0, 3)
+    p.addi(2, 0, 5)
+    p.addi(3, 0, 7)
+
+    p.shift("slli.w", 4, 1, 1)
+    p.alu("add.w", 5, 4, 2)       # slot1 rj only
+    p.shift("slli.w", 6, 2, 2)
+    p.alu("xor", 7, 1, 6)         # slot1 rkd only
+    p.alu("sll.w", 8, 1, 2)
+    p.alu("add.w", 9, 8, 8)       # both slot1 sources
+
+    p.shift("slli.w", 0, 1, 1)
+    p.alu("add.w", 10, 0, 2)      # r0 is never a producer
+    p.shift("slli.w", 11, 1, 3)
+    p.alu("xor", 11, 11, 2)       # legal same-rd WAW + RAW
+
+    # The older load/MUL is still pending in EX1/EX2 when the next pair reaches
+    # RF.  The younger slot0 SLL must shadow that pending WAW for slot1.
+    # This padding aligns each producer/fast-pair quartet to one fetch line.
+    p.addi(24, 0, 0x24)
+    p.addi(25, 0, 0x25)
+    p.load(12, 0)
+    p.addi(26, 0, 0x26)
+    p.shift("slli.w", 12, 1, 2)
+    p.alu("add.w", 13, 12, 3)
+    p.alu("mul.w", 14, 1, 2)
+    p.addi(27, 0, 0x27)
+    p.shift("slli.w", 14, 2, 1)
+    p.alu("xor", 15, 1, 14)
+
+    # Hold RF behind a cold load-use long enough for the six-entry FIFO to fill;
+    # the following three fast bundles must then transfer on consecutive clocks.
+    p.load(28, 64)
+    p.addi(24, 0, 0x24)
+    p.alu("add.w", 28, 28, 1)
+    p.addi(24, 24, 1)
+
+    # Three consecutive bundles also consume the preceding slot1 result.
+    p.shift("slli.w", 16, 1, 1)
+    p.alu("add.w", 17, 16, 3)
+    p.shift("slli.w", 18, 17, 1)
+    p.alu("xor", 19, 2, 18)
+    p.shift("slli.w", 20, 19, 2)
+    p.alu("add.w", 21, 20, 3)
+
+    # A taken slot0 branch must kill both its slot1 and the younger fast pair.
+    p.branch("beq", "redirect_target", 1, 1)
+    p.addi(25, 0, 0x25)
+    p.shift("slli.w", 29, 1, 1)   # unique wrong-path producer
+    p.alu("add.w", 30, 29, 2)
+    p.label("redirect_target")
+    p.shift("slli.w", 22, 2, 1)   # unique valid target producer
+    p.alu("xor", 23, 1, 22)
+    p.halt()
+    return p.resolve()
+
+
+def control_flow_case():
+    """Cover backward branches, BL/JIRL link semantics and r0 writes."""
+    p = Program()
+    init_scratch(p)
+    p.addi(2, 0, 4)
+    p.addi(3, 0, 0)
+
+    p.label("loop")
+    p.addi(3, 3, 1)
+    p.addi(2, 2, -1)
+    p.branch("bne", "loop", 2, 0)
+
+    p.branch("bl", "subroutine")
+    p.addi(4, 0, 0x44)
+    p.branch("b", "after_subroutine")
+
+    p.label("subroutine")
+    p.addi(5, 0, 0x55)
+    p.jirl(0, 1, 0)
+
+    p.label("after_subroutine")
+    p.alu("add.w", 6, 3, 5)
+    p.addi(0, 0, 0x123)
+    p.alu("add.w", 7, 0, 6)
+    p.halt()
+    return p.resolve()
+
+
 CASES = {
     "compact": compact_case,
     "conflicts": conflicts_case,
+    "control_flow": control_flow_case,
+    "intra_raw": intra_raw_case,
     "late_bypass": late_bypass_case,
     "mul_pipe": mul_pipe_case,
     "redirect": redirect_case,
@@ -327,6 +431,9 @@ def write_case(words, out_dir):
     with open(out_dir + "/golden_trace.hex", "w") as f:
         for pc, rd, value in golden.trace:
             f.write("%08x %02x %08x\n" % (pc, rd, value))
+    with open(out_dir + "/initial_mem.hex", "w") as f:
+        for _ in range(MEM_WORDS):
+            f.write("00000000\n")
     with open(out_dir + "/golden_mem.hex", "w") as f:
         for index in range(MEM_WORDS):
             f.write("%08x\n" % golden.lw(SCRATCH + index * 4))
