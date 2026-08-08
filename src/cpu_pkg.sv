@@ -16,10 +16,17 @@ package cpu_pkg;
 // alu_op 编码（12 位 one-hot），必须与 alu.sv 中的 OP_* 常量一致：
 //   bit0 add  bit1 sub  bit2 slt  bit3 sltu  bit4 and  bit5 nor
 //   bit6 or   bit7 xor  bit8 sll  bit9 srl   bit10 sra bit11 lui
-// 2026 baseline 使用 add/sub/slt/and/or/xor/sll/srl/lui；mul.w 与 cpucfg
-// 在 EX 中选择专用结果，不占用 alu_op 位。
+// mul.w/mulh.w/mulh.wu 与 cpucfg 在 EX 中选择专用结果，不占用 alu_op 位。
 // pcaddu12i 复用 add（src1_is_pc=1），无需单独 alu_op。
 // ---------------------------------------------------------------------------
+
+localparam logic [2:0] BR_UNCOND = 3'b000;
+localparam logic [2:0] BR_EQ     = 3'b001;
+localparam logic [2:0] BR_NE     = 3'b010;
+localparam logic [2:0] BR_LT     = 3'b011;
+localparam logic [2:0] BR_GE     = 3'b100;
+localparam logic [2:0] BR_LTU    = 3'b101;
+localparam logic [2:0] BR_GEU    = 3'b110;
 
 // 译码结果总线（decoder 输出）
 typedef struct packed {
@@ -36,19 +43,19 @@ typedef struct packed {
     logic        src_reg_is_rd;// 第二个读端口取 rd（st / beq / bne），否则取 rk
     logic        need_rj;      // 真正读 rj（用于前递/停顿判定，避免误停）
     logic        need_rkd;     // 真正读第二寄存器（rk 或 rd）
-    logic        is_mul;       // mul.w，EX 选择乘法器低 32 位
+    logic        is_mul;       // mul.w/mulh.w/mulh.wu
+    logic        mul_signed;   // 有符号乘法（mul.w/mulh.w）
+    logic        mul_high;     // 选择乘积高 32 位
     logic        is_cpucfg;    // cpucfg，EX 按 rj 值读取配置字
     // 访存
     logic        is_ld;        // 加载
     logic        is_st;        // 存储
-    logic        is_st_b;      // 字节存储（st.b），决定字节写使能
-    logic [ 3:0] ld_width;     // 1111=字 0001=字节（加载位宽）
-    logic        ld_ext_signed;// 加载符号扩展（ld.b 为有符号）
+    logic [ 3:0] ld_width;     // 1111=字 0011=半字 0001=字节（访存位宽）
+    logic        ld_ext_signed;// 加载符号扩展（ld.b/ld.h 为有符号）
     // 分支
-    logic        is_branch;    // b/bl/jirl/beq/bne 任一
+    logic        is_branch;    // 跳转或条件分支
     logic        inst_jirl;    // jirl：目标 = rj + imm
-    logic        inst_beq;     // beq：相等跳转
-    logic        inst_bne;     // bne：不等跳转
+    logic [ 2:0] br_cond;      // BR_*：无条件/相等/有符号或无符号比较
 } d_bus_t;
 
 // ===================== 单槽内容 =====================
@@ -83,18 +90,18 @@ typedef struct packed {
     logic        late_store_data;
     logic [ 4:0] rkd_addr;
     logic        is_mul;
+    logic        mul_signed;
+    logic        mul_high;
     logic        is_cpucfg;
     // 分支
     logic        is_branch;
     logic        inst_jirl;
-    logic        inst_beq;
-    logic        inst_bne;
+    logic [ 2:0] br_cond;
     logic        bp_taken;     // 取指时的预测方向（EX 比对误预测）
     logic [31:0] bp_target;    // 取指时的预测目标
     // 访存
     logic        is_ld;
     logic        is_st;
-    logic        is_st_b;
     logic [ 3:0] ld_width;
     logic        ld_ext_signed;
     // 写回
@@ -110,6 +117,8 @@ typedef struct packed {
     logic [31:0] mul_src1;
     logic [31:0] mul_src2;
     logic        is_mul;
+    logic        mul_signed;
+    logic        mul_high;
     logic        is_mem;       // 地址请求已被 Cache 接受，EX2 等待 data_ok
     logic [ 1:0] addr_lo;      // 访存地址低 2 位（字节/半字选择）
     logic [ 3:0] ld_width;

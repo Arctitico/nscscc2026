@@ -107,6 +107,9 @@ assign IS_to_RF_valid = is_valid;
 assign IS_allow_in    = ~is_valid | RF_allow_in;
 assign IS_take_two    = DP_to_IS_valid & IS_allow_in & can_coissue;
 wire   is_fire        = IS_to_RF_valid & RF_allow_in;
+// IS 总线寄存器很多，统一装载使能的扇出较高；提示综合器按区域复制
+// 这条控制网，避免它成为跨模块 ready 链的布线瓶颈，不改变流水行为。
+(* max_fanout = 64 *) wire is_bus_load = DP_to_IS_valid & IS_allow_in;
 
 // 这些脉冲只描述一次真正完成的 IS 发射。多个 split 原因可以同时为 1，
 // 便于区分“本次为何不能配对”；perf_split_total 则始终每个拆分 bundle 只计 1。
@@ -130,7 +133,7 @@ always_comb begin
 end
 
 always @(posedge clk) begin
-    if (DP_to_IS_valid & IS_allow_in)
+    if (is_bus_load)
         is_bus_r <= load_bus;
 end
 
@@ -141,7 +144,7 @@ always @(posedge clk) begin
         split_mem_r    <= 1'b0;
         split_mul_r    <= 1'b0;
         split_branch_r <= 1'b0;
-    end else if (DP_to_IS_valid & IS_allow_in) begin
+    end else if (is_bus_load) begin
         split_r        <= loading_split;
         split_raw_r    <= loading_split & intra_raw;
         split_mem_r    <= loading_split & (both_mem | branch_mem_bad);

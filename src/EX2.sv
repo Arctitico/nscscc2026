@@ -55,6 +55,8 @@ wire incoming_mul  = EX1_to_EX2_BUS.s0.is_mul | incoming_mul1;
 // PC/分支比较 -> slot1 选择 -> DSP 数据口的长组合路径。被 kill 时
 // incoming_mul=0，乘法器不会采样此处的 don't-care 操作数。
 wire incoming_mul_sel1 = ~EX1_to_EX2_BUS.s0.is_mul;
+wire incoming_mul_signed = incoming_mul_sel1 ? EX1_to_EX2_BUS.s1.mul_signed
+                                              : EX1_to_EX2_BUS.s0.mul_signed;
 wire ex2_mul1      = ex2_r.v1 & s1.is_mul;
 wire ex2_has_mul   = s0.is_mul | ex2_mul1;
 wire ex2_has_mem   = s0.is_mem | (ex2_r.v1 & s1.is_mem);
@@ -69,7 +71,7 @@ wire        mul_in_ready;
 wire        mul_out_valid;
 wire        mul_out_ready;
 wire [31:0] mul_low;
-wire [31:0] mul_high_unused;
+wire [31:0] mul_high;
 
 wire s0_done_now = (~s0.is_mul & ~s0.is_mem) |
                    (s0.is_mul & mul_out_valid) |
@@ -101,10 +103,13 @@ mul u_mul (
                             : EX1_to_EX2_BUS.s0.mul_src1),
     .b_in(incoming_mul_sel1 ? EX1_to_EX2_BUS.s1.mul_src2
                             : EX1_to_EX2_BUS.s0.mul_src2),
-    .is_signed(1'b1),
+    .is_signed(incoming_mul_signed),
     .out_valid(mul_out_valid), .out_ready(mul_out_ready),
-    .c_low(mul_low), .c_high(mul_high_unused)
+    .c_low(mul_low), .c_high(mul_high)
 );
+
+wire ex2_mul_high = ex2_mul1 ? s1.mul_high : s0.mul_high;
+wire [31:0] mul_result_now = ex2_mul_high ? mul_high : mul_low;
 
 always @(posedge clk) begin
     if (reset)              ex2_valid <= 1'b0;
@@ -131,7 +136,7 @@ always @(posedge clk) begin
         if (ex2_valid & ex2_r.v1 & s1_done_now)
             s1_done_q <= 1'b1;
         if (ex2_valid & ex2_has_mul & mul_out_valid)
-            mul_result_q <= mul_low;
+            mul_result_q <= mul_result_now;
         if (ex2_valid & ex2_has_mem & data_ok)
             mem_result_q <= data_sram_rdata;
     end
@@ -172,7 +177,7 @@ wire mem_saved = (s0.is_mem & s0_done_q) |
 wire mul_complete = ~ex2_has_mul | mul_saved | mul_out_valid;
 wire mem_complete = ~ex2_has_mem | mem_saved | data_ok;
 wire [31:0] mem_result = mem_saved ? mem_result_q : data_sram_rdata;
-wire [31:0] mul_result = mul_saved ? mul_result_q : mul_low;
+wire [31:0] mul_result = mul_saved ? mul_result_q : mul_result_now;
 wire [31:0] rf_wdata0 = write_data(s0, mem_result, mul_result);
 wire [31:0] rf_wdata1 = write_data(s1, mem_result, mul_result);
 

@@ -13,15 +13,23 @@ module alu (
 
 wire [31:0] add_result  = alu_src1 + alu_src2;
 wire [31:0] sub_result  = alu_src1 - alu_src2;
-wire [31:0] slt_result  = {31'b0, ($signed(alu_src1) < $signed(alu_src2))};
-wire [31:0] sltu_result = {31'b0, (alu_src1 < alu_src2)};
+// 有符号比较通过翻转两端符号位映射为无符号次序，让 SLT/SLTU
+// 共用一套比较器。
+wire        cmp_signed  = alu_op[2];
+wire [31:0] cmp_src1    = {alu_src1[31] ^ cmp_signed, alu_src1[30:0]};
+wire [31:0] cmp_src2    = {alu_src2[31] ^ cmp_signed, alu_src2[30:0]};
+wire [31:0] slt_result  = {31'b0, (cmp_src1 < cmp_src2)};
+wire [31:0] sltu_result = slt_result;
 wire [31:0] and_result  = alu_src1 & alu_src2;
 wire [31:0] nor_result  = ~(alu_src1 | alu_src2);
 wire [31:0] or_result   = alu_src1 | alu_src2;
 wire [31:0] xor_result  = alu_src1 ^ alu_src2;
 wire [31:0] sll_result  = alu_src1 << alu_src2[4:0];
-wire [31:0] srl_result  = alu_src1 >> alu_src2[4:0];
-wire [31:0] sra_result  = $signed(alu_src1) >>> alu_src2[4:0];
+// 逻辑/算术右移仅扩展位不同，共用一套 33-bit 算术右移器。
+wire signed [32:0] sr_src = {alu_op[10] & alu_src1[31], alu_src1};
+wire signed [32:0] sr_result = sr_src >>> alu_src2[4:0];
+wire [31:0] srl_result  = sr_result[31:0];
+wire [31:0] sra_result  = sr_result[31:0];
 wire [31:0] lui_result  = alu_src2;   // lu12i.w：{i20,12'b0} 已在 imm 中
 
 always @* begin

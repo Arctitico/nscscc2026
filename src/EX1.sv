@@ -117,20 +117,33 @@ wire [31:0] base_result1 = s1.is_cpucfg ? cpucfg(s1.alu_src1)
                            : has_intra_raw ? intra_result : alu_result1;
 
 // ---------------- 双槽分支解析；IS 保证至多一个分支 ----------------
-wire        eq0         = (s0.alu_src1 == s0.rkd_value);
-wire        uncond0     = s0.is_branch & ~s0.inst_beq & ~s0.inst_bne;
-wire        cond_taken0 = (s0.inst_beq & eq0) | (s0.inst_bne & ~eq0);
-wire        br_taken0   = ex1_v0 & (uncond0 | cond_taken0);
+function automatic branch_taken(
+    input logic [2:0]  cond,
+    input logic [31:0] lhs,
+    input logic [31:0] rhs
+);
+    case (cond)
+        BR_UNCOND: branch_taken = 1'b1;
+        BR_EQ:     branch_taken = (lhs == rhs);
+        BR_NE:     branch_taken = (lhs != rhs);
+        BR_LT:     branch_taken = ($signed(lhs) < $signed(rhs));
+        BR_GE:     branch_taken = ($signed(lhs) >= $signed(rhs));
+        BR_LTU:    branch_taken = (lhs < rhs);
+        BR_GEU:    branch_taken = (lhs >= rhs);
+        default:   branch_taken = 1'b0;
+    endcase
+endfunction
+
+wire        br_taken0   = ex1_v0 & s0.is_branch &
+                          branch_taken(s0.br_cond, s0.alu_src1, s0.rkd_value);
 wire [31:0] br_target0  = s0.inst_jirl ? (s0.alu_src1 + s0.imm)
                                          : (s0.pc + s0.imm);
 wire mispred0 = ex1_v0 & s0.is_branch &
                 ((s0.bp_taken ^ br_taken0) |
                  (br_taken0 & s0.bp_taken & (br_target0 != s0.bp_target)));
 
-wire        eq1         = (s1.alu_src1 == s1.rkd_value);
-wire        uncond1     = s1.is_branch & ~s1.inst_beq & ~s1.inst_bne;
-wire        cond_taken1 = (s1.inst_beq & eq1) | (s1.inst_bne & ~eq1);
-wire        br_taken1   = ex1_v1 & (uncond1 | cond_taken1);
+wire        br_taken1   = ex1_v1 & s1.is_branch &
+                          branch_taken(s1.br_cond, s1.alu_src1, s1.rkd_value);
 wire [31:0] br_target1  = s1.inst_jirl ? (s1.alu_src1 + s1.imm)
                                          : (s1.pc + s1.imm);
 wire mispred1 = ex1_v1 & s1.is_branch &
@@ -153,13 +166,15 @@ wire mem_sel1 = is_mem1;
 (* keep = "true" *) wire [31:0] mem_addr1 = s1.alu_src1 + s1.alu_src2;
 wire [31:0] mem_addr = mem_sel1 ? mem_addr1 : mem_addr0;
 wire        st_sel   = mem_sel1 ? s1.is_st : s0.is_st;
-wire        stb_sel  = mem_sel1 ? s1.is_st_b : s0.is_st_b;
 wire [ 3:0] ldw_sel  = mem_sel1 ? s1.ld_width : s0.ld_width;
 wire [31:0] rkd_sel_base = mem_sel1 ? s1.rkd_value : s0.rkd_value;
 wire [31:0] rkd_sel  = late_store_pending ? late_value_now : rkd_sel_base;
 
-wire [ 3:0] st_wstrb = stb_sel ? (4'b0001 << mem_addr[1:0]) : 4'b1111;
-wire [31:0] st_wdata = stb_sel ? {4{rkd_sel[7:0]}} : rkd_sel;
+wire [ 3:0] st_wstrb = (ldw_sel == 4'b0001) ? (4'b0001 << mem_addr[1:0]) :
+                          (ldw_sel == 4'b0011) ? (mem_addr[1] ? 4'b1100 : 4'b0011) :
+                                                4'b1111;
+wire [31:0] st_wdata = (ldw_sel == 4'b0001) ? {4{rkd_sel[7:0]}} :
+                          (ldw_sel == 4'b0011) ? {2{rkd_sel[15:0]}} : rkd_sel;
 
 // 请求只在 EX2 能原子接收本 bundle 时出现；addr_ok 的同一边沿将 bundle
 // 锁存进 EX2，所以下一拍不会重复请求。
@@ -170,7 +185,8 @@ wire [31:0] st_wdata = stb_sel ? {4{rkd_sel[7:0]}} : rkd_sel;
 // 请求，否则会形成 D-cache tag-hit -> EX2 -> EX1 -> SRAM 控制的长组合链。
 assign data_sram_we    = data_sram_en & st_sel ? st_wstrb : 4'b0;
 assign data_sram_en    = ex1_valid & has_mem & EX2_allow_in & ~selfmod_flush;
-assign data_sram_size  = (stb_sel | (ldw_sel == 4'b0001)) ? 3'b000 : 3'b010;
+assign data_sram_size  = (ldw_sel == 4'b0001) ? 3'b000 :
+                         (ldw_sel == 4'b0011) ? 3'b001 : 3'b010;
 assign data_sram_addr  = mem_addr;
 assign data_sram_wdata = st_wdata;
 assign data_sram_pc    = mem_sel1 ? s1.pc : s0.pc;
@@ -192,8 +208,8 @@ assign bp_upd_en      = ex1_fire &
                         ((ex1_v0 & s0.is_branch) | (ex1_v1 & s1.is_branch));
 assign bp_upd_pc      = branch_sel1 ? s1.pc : s0.pc;
 assign bp_upd_taken   = branch_sel1 ? br_taken1 : br_taken0;
-assign bp_upd_is_cond = branch_sel1 ? (s1.inst_beq | s1.inst_bne)
-                                    : (s0.inst_beq | s0.inst_bne);
+assign bp_upd_is_cond = branch_sel1 ? (s1.br_cond != BR_UNCOND)
+                                    : (s0.br_cond != BR_UNCOND);
 assign bp_upd_target  = branch_sel1 ? br_target1 : br_target0;
 
 always @(posedge clk) begin
@@ -221,6 +237,7 @@ end
 assign EX1_to_EX2_BUS = '{
     s0: '{pc: s0.pc, inst: s0.inst, base_result: base_result0,
           mul_src1: s0.mul_src1, mul_src2: s0.mul_src2, is_mul: s0.is_mul,
+          mul_signed: s0.mul_signed, mul_high: s0.mul_high,
           is_mem: is_mem0, addr_lo: mem_addr0[1:0],
           ld_width: s0.ld_width, ld_ext_signed: s0.ld_ext_signed,
           rf_wdata_sel: s0.rf_wdata_sel, rf_we: s0.rf_we, rf_waddr: s0.rf_waddr},
@@ -229,6 +246,7 @@ assign EX1_to_EX2_BUS = '{
           // 这里只掩掉本来就无效的 slot1，不串入 mispred/selfmod
           // 精确 kill。若有效 MUL 随后被 kill，EX2 会消费并丢弃其 token。
           is_mul: ex1_v1 & s1.is_mul,
+          mul_signed: s1.mul_signed, mul_high: s1.mul_high,
           is_mem: is_mem1, addr_lo: mem_addr1[1:0],
           ld_width: s1.ld_width, ld_ext_signed: s1.ld_ext_signed,
           rf_wdata_sel: s1.rf_wdata_sel, rf_we: s1.rf_we, rf_waddr: s1.rf_waddr},
