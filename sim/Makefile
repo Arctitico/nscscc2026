@@ -9,7 +9,7 @@ SRCS = $(SRC_DIR)/cpu_pkg.sv $(SRC_DIR)/tools.sv $(SRC_DIR)/alu.sv $(SRC_DIR)/mu
        $(SRC_DIR)/IS.sv $(SRC_DIR)/RF.sv $(SRC_DIR)/EX1.sv $(SRC_DIR)/EX2.sv \
        $(SRC_DIR)/CM.sv $(SRC_DIR)/mycpu_top.sv
 
-.PHONY: run lint rand fuzz p1-regress mul-pipe late-bypass waw-raw \
+.PHONY: run lint rand fuzz p1-regress full-int mul-pipe late-bypass waw-raw \
         intra-raw control-flow clean
 
 VFLAGS = --binary --timing --top-module tb -o Vtb \
@@ -35,6 +35,7 @@ lint:
 #       make waw-raw         (年轻 ready WAW 覆盖老 pending producer)
 #       make intra-raw       (专用 SLL->ADD/XOR bundle 内 RAW 契约)
 #       make control-flow    (bl/jirl/r0/反向循环)
+#       make full-int        (全部新增非除法整数指令及边界值)
 SEED  ?= 1
 N     ?= 120
 MR    ?= 0.30
@@ -79,6 +80,11 @@ control-flow:
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
 	./obj_dir/Vtb_rand
 
+full-int:
+	python3 fifo_regress.py --case full_int >/dev/null
+	verilator $(RFLAGS) $(SRCS) tb_rand.sv
+	./obj_dir/Vtb_rand
+
 # 编译一次，循环换 seed 重新生成激励并跑。共享 runner 会逐轮删除旧向量、
 # 检查生成器/模拟器退出码、PASS marker 以及 random.meta 的 seed/参数。
 COUNT ?= 50
@@ -94,7 +100,7 @@ fuzz:
 
 P1_COUNT ?= 20
 P1_N     ?= 300
-P1_CASES  = compact conflicts redirect pressure
+P1_CASES  = compact conflicts redirect pressure full_int
 p1-regress:
 	verilator $(RFLAGS) $(SRCS) tb_rand.sv
 	@set -e; \

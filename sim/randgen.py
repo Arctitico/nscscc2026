@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # ============================================================================
-# randgen.py —— LA32R 2026 baseline 随机指令生成器 + 黄金模型(DiffTest 参考)
+# randgen.py —— LA32R 非除法整数指令随机生成器 + 黄金模型(DiffTest 参考)
 #
 # 思路(DiffTest / 协同仿真):
-#   1) 随机生成算术/逻辑/移位/访存，并可选插入只向前跳的分支，
+#   1) 随机生成全部普通非除法整数/访存指令，并可选插入只向前跳的分支，
 #      因此程序仍然必定终止。
 #   2) 黄金模型对「编码后的 32 位指令字」做*独立*译码+执行(不复用编码器的语义),
 #      产出 in-order 提交流(每条写寄存器指令一条记录: pc/wnum/wdata)与最终内存镜像。
@@ -23,7 +23,7 @@
 #   - dest 寄存器只用 1..30: r0 恒 0(写被忽略), r31 保留作 scratch 基址指针。
 #     这样每条写寄存器指令的 wnum 都 !=0, 与 CPU 的 debug_wb 脉冲一一对应。
 #   - 寄存器复位初值视为 0 (Verilator 2-state 默认 0 初始化, 与黄金模型一致)。
-#   - scratch 区固定从 ExtRAM 0x1c400000 开始，字访存 4 对齐、字节访存任意。
+#   - scratch 区固定从 ExtRAM 0x1c400000 开始，字/半字自然对齐、字节访存任意。
 # ============================================================================
 import argparse
 import json
@@ -49,12 +49,29 @@ def enc_i26(base, off):
     o = off & 0x3FFFFFF
     return base | ((o&0xFFFF)<<10) | ((o>>16)&0x3FF)
 
-OP_3R = {"add.w":0x00100000,"sub.w":0x00110000,"slt":0x00120000,
-         "and":0x00148000,"or":0x00150000,"xor":0x00158000,
-         "sll.w":0x00170000,"mul.w":0x001C0000}
-OP_12 = {"addi.w":0x02800000,"andi":0x03400000,"ori":0x03800000,
-         "ld.b":0x28000000,"ld.w":0x28800000,"st.b":0x29000000,"st.w":0x29800000}
-OP_5  = {"slli.w":0x00408000,"srli.w":0x00448000}
+OP_3R = {
+    "add.w":0x00100000, "sub.w":0x00110000,
+    "slt":0x00120000, "sltu":0x00128000,
+    "nor":0x00140000, "and":0x00148000,
+    "or":0x00150000, "xor":0x00158000,
+    "sll.w":0x00170000, "srl.w":0x00178000, "sra.w":0x00180000,
+    "mul.w":0x001C0000, "mulh.w":0x001C8000, "mulh.wu":0x001D0000,
+}
+OP_12 = {
+    "slti":0x02000000, "sltui":0x02400000, "addi.w":0x02800000,
+    "andi":0x03400000, "ori":0x03800000, "xori":0x03C00000,
+    "ld.b":0x28000000, "ld.h":0x28400000, "ld.w":0x28800000,
+    "st.b":0x29000000, "st.h":0x29400000, "st.w":0x29800000,
+    "ld.bu":0x2A000000, "ld.hu":0x2A400000,
+}
+OP_5  = {
+    "slli.w":0x00408000, "srli.w":0x00448000, "srai.w":0x00488000,
+}
+BRANCH_OPS = {
+    "b":0x50000000, "beq":0x58000000, "bne":0x5C000000,
+    "blt":0x60000000, "bge":0x64000000,
+    "bltu":0x68000000, "bgeu":0x6C000000,
+}
 
 def sext(v, bits):
     m = 1 << (bits-1)
@@ -104,8 +121,12 @@ class Golden:
     def wb(self, a, v): self.mem[a] = v & 0xFF
     def lw(self, a):
         return self.rb(a) | (self.rb(a+1)<<8) | (self.rb(a+2)<<16) | (self.rb(a+3)<<24)
+    def lh(self, a):
+        return self.rb(a) | (self.rb(a+1)<<8)
     def sw(self, a, v):
         for k in range(4): self.wb(a+k, (v>>(8*k))&0xFF)
+    def sh(self, a, v):
+        for k in range(2): self.wb(a+k, (v>>(8*k))&0xFF)
     def commit(self, pc, rd, val):
         # 模拟 RTL: rf_we 指令都产生脉冲; r0 写被 regfile 忽略(架构值不变),
         # 但本生成器从不用 r0/r31 作 dest, 故 rd 必在 1..30。
@@ -115,7 +136,7 @@ class Golden:
 
     def step(self, pc, inst):
         op6  = (inst>>26)&0x3F
-        if op6 in (0x13, 0x14, 0x15, 0x16, 0x17):
+        if op6 in (0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b):
             rd = inst & 31
             rj = (inst>>5) & 31
             off16 = sext((inst>>10) & 0xFFFF, 16) << 2
@@ -129,7 +150,13 @@ class Golden:
                 target = u32(self.R[rj] + off16)
                 self.commit(pc, rd, pc + 4)
                 return target
-            taken = (self.R[rj] == self.R[rd]) if op6 == 0x16 else (self.R[rj] != self.R[rd])
+            lhs, rhs = self.R[rj], self.R[rd]
+            if   op6 == 0x16: taken = (lhs == rhs)                       # beq
+            elif op6 == 0x17: taken = (lhs != rhs)                       # bne
+            elif op6 == 0x18: taken = (sext(lhs, 32) < sext(rhs, 32))     # blt
+            elif op6 == 0x19: taken = (sext(lhs, 32) >= sext(rhs, 32))    # bge
+            elif op6 == 0x1a: taken = (lhs < rhs)                         # bltu
+            else:             taken = (lhs >= rhs)                        # bgeu
             return u32(pc + off16) if taken else u32(pc + 4)
 
         op22 = (inst>>22)&0xF
@@ -151,22 +178,35 @@ class Golden:
             if   op15 == 0x00: self.commit(pc, rd, Rj + Rk)        # add.w
             elif op15 == 0x02: self.commit(pc, rd, Rj - Rk)        # sub.w
             elif op15 == 0x04: self.commit(pc, rd, int(sext(Rj, 32) < sext(Rk, 32))) # slt
+            elif op15 == 0x05: self.commit(pc, rd, int(Rj < Rk))   # sltu
+            elif op15 == 0x08: self.commit(pc, rd, ~(Rj | Rk))     # nor
             elif op15 == 0x09: self.commit(pc, rd, Rj & Rk)        # and
             elif op15 == 0x0a: self.commit(pc, rd, Rj | Rk)        # or
             elif op15 == 0x0b: self.commit(pc, rd, Rj ^ Rk)        # xor
             elif op15 == 0x0e: self.commit(pc, rd, Rj << (Rk & 31)) # sll.w
+            elif op15 == 0x0f: self.commit(pc, rd, Rj >> (Rk & 31)) # srl.w
+            elif op15 == 0x10: self.commit(pc, rd, sext(Rj, 32) >> (Rk & 31)) # sra.w
             elif op15 == 0x18: self.commit(pc, rd, Rj * Rk)        # mul.w low 32
+            elif op15 == 0x19: self.commit(pc, rd, (sext(Rj, 32) * sext(Rk, 32)) >> 32) # mulh.w
+            elif op15 == 0x1a: self.commit(pc, rd, (Rj * Rk) >> 32) # mulh.wu
             else: raise ValueError("bad 3R %08x" % inst)
         elif op6 == 0x00 and op22 == 0x1 and op20 == 0x0:         # 移位
             if   op15 == 0x01: self.commit(pc, rd, Rj << ui5)      # slli.w
             elif op15 == 0x09: self.commit(pc, rd, (Rj & 0xFFFFFFFF) >> ui5)  # srli.w
+            elif op15 == 0x11: self.commit(pc, rd, sext(Rj, 32) >> ui5) # srai.w
             else: raise ValueError("bad shift %08x" % inst)
+        elif op6 == 0x00 and op22 == 0x8:                          # slti
+            self.commit(pc, rd, int(sext(Rj, 32) < sext(i12f, 12)))
+        elif op6 == 0x00 and op22 == 0x9:                          # sltui
+            self.commit(pc, rd, int(Rj < u32(sext(i12f, 12))))
         elif op6 == 0x00 and op22 == 0xa:                          # addi.w
             self.commit(pc, rd, Rj + sext(i12f, 12))
         elif op6 == 0x00 and op22 == 0xd:                          # andi (零扩展)
             self.commit(pc, rd, Rj & i12f)
         elif op6 == 0x00 and op22 == 0xe:                          # ori
             self.commit(pc, rd, Rj | i12f)
+        elif op6 == 0x00 and op22 == 0xf:                          # xori
+            self.commit(pc, rd, Rj ^ i12f)
         elif op6 == 0x05:                                          # lu12i.w
             self.commit(pc, rd, i20f << 12)
         elif op6 == 0x07:                                          # pcaddu12i
@@ -176,8 +216,12 @@ class Golden:
             addr = u32(Rj + imm)
             if   op22 == 0x2: self.commit(pc, rd, self.lw(addr))           # ld.w
             elif op22 == 0x0: self.commit(pc, rd, sext(self.rb(addr), 8))  # ld.b
+            elif op22 == 0x1: self.commit(pc, rd, sext(self.lh(addr), 16)) # ld.h
+            elif op22 == 0x8: self.commit(pc, rd, self.rb(addr))           # ld.bu
+            elif op22 == 0x9: self.commit(pc, rd, self.lh(addr))           # ld.hu
             elif op22 == 0x6: self.sw(addr, Rd)                            # st.w
             elif op22 == 0x4: self.wb(addr, Rd & 0xFF)                     # st.b
+            elif op22 == 0x5: self.sh(addr, Rd & 0xFFFF)                   # st.h
             else: raise ValueError("bad mem %08x" % inst)
         else:
             raise ValueError("unhandled inst %08x @ pc=%08x" % (inst, pc))
@@ -203,9 +247,13 @@ class Golden:
 # ============================================================================
 # 随机程序生成
 # ============================================================================
-DP_OPS  = ["add.w","sub.w","slt","and","or","xor","sll.w","mul.w",
-           "slli.w","srli.w","addi.w","andi","ori","lu12i.w","pcaddu12i","cpucfg"]
-MEM_OPS = ["ld.w","ld.b","st.w","st.b"]
+DP_OPS  = [
+    "add.w", "sub.w", "slt", "sltu", "nor", "and", "or", "xor",
+    "sll.w", "srl.w", "sra.w", "mul.w", "mulh.w", "mulh.wu",
+    "slli.w", "srli.w", "srai.w", "addi.w", "slti", "sltui",
+    "andi", "ori", "xori", "lu12i.w", "pcaddu12i", "cpucfg",
+]
+MEM_OPS = ["ld.w", "ld.h", "ld.b", "ld.bu", "ld.hu", "st.w", "st.h", "st.b"]
 
 def gen(seed, n, window_words, mem_ratio, branch_ratio=0.0):
     rng = random.Random(seed)
@@ -236,42 +284,39 @@ def gen(seed, n, window_words, mem_ratio, branch_ratio=0.0):
         if branch_ratio > 0 and rng.random() < branch_ratio:
             max_words = max(1, min(8, n - i))
             offset = rng.randint(1, max_words)
-            op = rng.choice(("b", "beq", "bne"))
+            op = rng.choice(tuple(BRANCH_OPS))
             if op == "b":
-                words.append(enc_i26(0x50000000, offset))
+                words.append(enc_i26(BRANCH_OPS[op], offset))
                 asm.append((op, ("+%dw" % offset,)))
             else:
                 rj, rd = pick_src(), pick_src()
-                base = 0x58000000 if op == "beq" else 0x5C000000
-                words.append(enc_2ri16(base, rd, rj, offset))
+                words.append(enc_2ri16(BRANCH_OPS[op], rd, rj, offset))
                 asm.append((op, (rj, rd, "+%dw" % offset)))
             continue
         if rng.random() < mem_ratio:
             op = rng.choice(MEM_OPS)
             if op in ("ld.w", "st.w"):
                 off = rng.randrange(0, win_bytes, 4)        # 4 对齐
+            elif op in ("ld.h", "ld.hu", "st.h"):
+                off = rng.randrange(0, win_bytes, 2)        # 2 对齐
             else:
                 off = rng.randrange(0, win_bytes)           # 字节任意
-            if op == "ld.w":
+            if op.startswith("ld."):
                 d = pick_dst(); words.append(enc_2ri12(OP_12[op], d, SCRATCH_REG, off)); asm.append((op,(d,SCRATCH_REG,off)))
-            elif op == "ld.b":
-                d = pick_dst(); words.append(enc_2ri12(OP_12[op], d, SCRATCH_REG, off)); asm.append((op,(d,SCRATCH_REG,off)))
-            elif op == "st.w":
-                s = pick_src(); words.append(enc_2ri12(OP_12[op], s, SCRATCH_REG, off)); asm.append((op,(s,SCRATCH_REG,off)))
-            else:  # st.b
+            else:
                 s = pick_src(); words.append(enc_2ri12(OP_12[op], s, SCRATCH_REG, off)); asm.append((op,(s,SCRATCH_REG,off)))
         else:
             op = rng.choice(DP_OPS)
             if op in OP_3R:
                 d, a, b = pick_dst(), pick_src(), pick_src()
                 words.append(enc_3r(OP_3R[op], d, a, b)); asm.append((op,(d,a,b)))
-            elif op in ("slli.w","srli.w"):
+            elif op in ("slli.w", "srli.w", "srai.w"):
                 d, a, sh = pick_dst(), pick_src(), rng.randint(0,31)
                 words.append(enc_2ri5(OP_5[op], d, a, sh)); asm.append((op,(d,a,sh)))
-            elif op == "addi.w":
+            elif op in ("addi.w", "slti", "sltui"):
                 d, a, im = pick_dst(), pick_src(), rng.randint(-2048,2047)
                 words.append(enc_2ri12(OP_12[op], d, a, im)); asm.append((op,(d,a,im)))
-            elif op in ("andi","ori"):
+            elif op in ("andi", "ori", "xori"):
                 d, a, im = pick_dst(), pick_src(), rng.randint(0,4095)
                 words.append(enc_2ri12(OP_12[op], d, a, im)); asm.append((op,(d,a,im)))
             elif op == "lu12i.w":
@@ -310,7 +355,7 @@ def main():
     ap.add_argument("--mem-ratio", type=ratio, default=0.30,
                     help="访存指令占比")
     ap.add_argument("--branch-ratio", type=ratio, default=0.0,
-                    help="前向 b/beq/bne 占比")
+                    help="前向 b/六类条件分支占比")
     ap.add_argument("--init-mode", choices=("random", "zero"), default="random",
                     help="scratch 初值模式")
     ap.add_argument("--out-dir", default=".")
@@ -347,7 +392,7 @@ def main():
         "init_mode": args.init_mode,
         "mem_ratio": args.mem_ratio,
         "n": args.n,
-        "schema": 1,
+        "schema": 2,
         "seed": args.seed,
         "window": args.window,
     }

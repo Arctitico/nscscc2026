@@ -97,7 +97,7 @@ def main():
         "init_mode": args.init_mode,
         "mem_ratio": args.mem_ratio,
         "n": args.n,
-        "schema": 1,
+        "schema": 2,
         "window": args.window,
     }
 

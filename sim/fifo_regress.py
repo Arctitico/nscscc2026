@@ -5,6 +5,7 @@ import argparse
 
 from randgen import (
     BASE,
+    BRANCH_OPS,
     SCRATCH,
     Golden,
     OP_3R,
@@ -39,20 +40,23 @@ class Program:
     def addi(self, rd, rj, imm):
         self.emit(enc_2ri12(OP_12["addi.w"], rd, rj, imm))
 
+    def imm(self, op, rd, rj, imm):
+        self.emit(enc_2ri12(OP_12[op], rd, rj, imm))
+
     def alu(self, op, rd, rj, rk):
         self.emit(enc_3r(OP_3R[op], rd, rj, rk))
 
     def shift(self, op, rd, rj, amount):
         self.emit(enc_2ri5(OP_5[op], rd, rj, amount))
 
-    def load(self, rd, offset):
-        self.emit(enc_2ri12(OP_12["ld.w"], rd, 31, offset))
+    def load(self, rd, offset, op="ld.w"):
+        self.emit(enc_2ri12(OP_12[op], rd, 31, offset))
 
-    def store(self, rd, offset):
-        self.emit(enc_2ri12(OP_12["st.w"], rd, 31, offset))
+    def store(self, rd, offset, op="st.w"):
+        self.emit(enc_2ri12(OP_12[op], rd, 31, offset))
 
-    def store_base(self, rd, rj, offset):
-        self.emit(enc_2ri12(OP_12["st.w"], rd, rj, offset))
+    def store_base(self, rd, rj, offset, op="st.w"):
+        self.emit(enc_2ri12(OP_12[op], rd, rj, offset))
 
     def branch(self, op, label, rj=0, rd=0):
         self.fixups.append((len(self.words), op, label, rj, rd))
@@ -71,14 +75,11 @@ class Program:
             if label not in self.labels:
                 raise ValueError("unknown label: %s" % label)
             offset = self.labels[label] - index
-            if op == "b":
-                words[index] = enc_i26(0x50000000, offset)
-            elif op == "bl":
-                words[index] = enc_i26(0x54000000, offset)
-            elif op == "beq":
-                words[index] = enc_2ri16(0x58000000, rd, rj, offset)
-            elif op == "bne":
-                words[index] = enc_2ri16(0x5C000000, rd, rj, offset)
+            if op in ("b", "bl"):
+                base = 0x50000000 if op == "b" else 0x54000000
+                words[index] = enc_i26(base, offset)
+            elif op in BRANCH_OPS:
+                words[index] = enc_2ri16(BRANCH_OPS[op], rd, rj, offset)
             else:
                 raise ValueError("unknown branch: %s" % op)
         return words
@@ -86,6 +87,13 @@ class Program:
 
 def init_scratch(p):
     p.emit(enc_1ri20(0x14000000, 31, SCRATCH >> 12))
+
+
+def load_constant(p, rd, value):
+    """Materialize an exact 32-bit value with lu12i.w + ori."""
+    value &= 0xFFFFFFFF
+    p.emit(enc_1ri20(0x14000000, rd, value >> 12))
+    p.imm("ori", rd, rd, value & 0xFFF)
 
 
 def compact_case():
@@ -407,10 +415,191 @@ def control_flow_case():
     return p.resolve()
 
 
+def full_int_case():
+    """Cover every newly added non-divider instruction and its edge cases."""
+    p = Program()
+    init_scratch(p)
+
+    # Signed/unsigned extrema and shift counts 31/32 distinguish operations
+    # whose results otherwise often coincide on small positive operands.
+    load_constant(p, 1, 0xFFFFFFFF)
+    load_constant(p, 2, 0x80000000)
+    load_constant(p, 3, 0x7FFFFFFF)
+    load_constant(p, 4, 0x12345678)
+    p.addi(5, 0, 31)
+    p.addi(6, 0, 32)
+
+    p.alu("sltu", 7, 1, 2)
+    p.store(7, 0)
+    p.alu("sltu", 8, 2, 1)
+    p.store(8, 4)
+    p.alu("nor", 9, 4, 3)
+    p.store(9, 8)
+    p.alu("srl.w", 10, 2, 5)
+    p.store(10, 12)
+    p.alu("sra.w", 11, 2, 5)
+    p.store(11, 16)
+    p.alu("srl.w", 12, 4, 6)       # register shift count is masked to 5 bits
+    p.store(12, 20)
+
+    # Independent high-half products are adjacent to exercise multiplier II=1.
+    p.alu("mulh.w", 13, 1, 4)
+    p.alu("mulh.wu", 14, 1, 4)
+    p.alu("mulh.w", 15, 2, 1)
+    p.alu("mulh.wu", 16, 1, 1)
+    p.store(13, 24)
+    p.store(14, 28)
+    p.store(15, 32)
+    p.store(16, 36)
+
+    p.shift("srai.w", 17, 2, 31)
+    p.store(17, 40)
+    p.shift("srai.w", 18, 2, 0)
+    p.store(18, 44)
+    p.imm("xori", 19, 4, 0xFFF)
+    p.store(19, 48)
+    p.imm("xori", 20, 4, 0)
+    p.store(20, 52)
+    p.imm("slti", 21, 1, 0)
+    p.store(21, 56)
+    p.imm("slti", 22, 3, -1)
+    p.store(22, 60)
+    p.imm("sltui", 23, 3, -1)
+    p.store(23, 64)
+    p.imm("sltui", 24, 1, -1)
+    p.store(24, 68)
+    p.imm("slti", 25, 2, -2048)
+    p.store(25, 72)
+    p.imm("sltui", 26, 1, -2048)
+    p.store(26, 76)
+
+    # Byte layout is 01 7f ff 80.  This covers both halfword lanes, signed
+    # extension, unsigned byte/half loads, both st.h strobes, and load->store
+    # data late bypass for sub-word accesses.
+    load_constant(p, 27, 0x80FF7F01)
+    p.store(27, 96)
+    p.load(20, 96, "ld.h")
+    p.store(20, 100)
+    p.load(21, 98, "ld.h")
+    p.store(21, 104)
+    p.load(22, 98, "ld.hu")
+    p.store(22, 108)
+    p.load(23, 98, "ld.bu")
+    p.store(23, 112)
+    p.load(24, 99, "ld.bu")
+    p.store(24, 116)
+
+    load_constant(p, 25, 0x11223344)
+    p.store(25, 120)
+    load_constant(p, 26, 0xA1B2C3D4)
+    p.store(26, 120, "st.h")
+    load_constant(p, 27, 0x55667788)
+    p.store(27, 122, "st.h")
+    p.load(28, 120)
+    p.store(28, 124)
+
+    load_constant(p, 29, 0xDEADBEEF)
+    p.store(29, 128)
+    p.load(30, 98, "ld.hu")
+    p.store(30, 128, "st.h")
+    p.load(28, 128)
+    p.store(28, 132)
+    p.load(30, 96, "ld.hu")
+    p.store(30, 130, "st.h")
+    p.load(28, 128)
+    p.store(28, 136)
+    p.load(28, 96, "ld.bu")
+    p.store(28, 140)
+    p.load(28, 97, "ld.bu")
+    p.store(28, 144)
+    p.load(28, 96, "ld.hu")
+    p.store(28, 148)
+
+    # For each relational branch, an add immediately after it contributes a
+    # unique bit only when the branch is not taken.  The final signature 0x96
+    # independently checks signed/unsigned and LT/GE polarity.
+    p.addi(20, 0, 0)
+    branch_cases = (
+        ("blt",  1, 3,   1),
+        ("bge",  1, 3,   2),
+        ("bltu", 1, 3,   4),
+        ("bgeu", 1, 3,   8),
+        ("blt",  3, 1,  16),
+        ("bge",  3, 1,  32),
+        ("bltu", 3, 1,  64),
+        ("bgeu", 3, 1, 128),
+    )
+    for index, (op, rj, rd, weight) in enumerate(branch_cases):
+        target = "rel_done_%d" % index
+        p.branch(op, target, rj, rd)
+        p.addi(20, 20, weight)
+        p.label(target)
+    p.store(20, 152)
+
+    # A taken slot0 relational branch may have launched a younger high-half
+    # multiply speculatively; its token must be consumed but never committed.
+    p.branch("blt", "rel_mul_killed", 1, 3)
+    p.alu("mulh.wu", 30, 1, 1)
+    p.label("rel_mul_killed")
+    p.addi(30, 0, 0x30)
+
+    # Repeated backward relational branches cover taken-to-not-taken predictor
+    # transitions, rather than only one-shot forward redirects.
+    p.addi(21, 0, 0)
+    p.addi(22, 0, 4)
+    p.label("signed_loop")
+    p.addi(21, 21, 1)
+    p.branch("blt", "signed_loop", 21, 22)
+    p.store(21, 156)
+
+    p.addi(23, 0, 3)
+    p.addi(24, 0, 0)
+    p.label("unsigned_loop")
+    p.addi(24, 24, 1)
+    p.branch("bgeu", "unsigned_loop", 23, 24)
+    p.store(24, 160)
+
+    # ME+MU completion overlap and a younger ready WAW over a high multiply.
+    p.load(25, 98, "ld.hu")
+    p.alu("mulh.wu", 26, 1, 4)
+    p.store(25, 164)
+    p.store(26, 168)
+    p.alu("mulh.wu", 27, 1, 1)
+    p.addi(27, 0, 0x55)
+    p.addi(28, 27, 1)
+    p.store(28, 172)
+
+    # Architectural r0 remains zero even when a newly added ALU op targets it.
+    p.alu("sltu", 0, 2, 1)
+    p.store(0, 176)
+    p.halt()
+    return p.resolve()
+
+
+FULL_INT_EXPECTED = {
+    0: 0x00000000, 1: 0x00000001, 2: 0x80000000,
+    3: 0x00000001, 4: 0xFFFFFFFF, 5: 0x12345678,
+    6: 0xFFFFFFFF, 7: 0x12345677, 8: 0x00000000,
+    9: 0xFFFFFFFE, 10: 0xFFFFFFFF, 11: 0x80000000,
+    12: 0x12345987, 13: 0x12345678, 14: 0x00000001,
+    15: 0x00000000, 16: 0x00000001, 17: 0x00000000,
+    18: 0x00000001, 19: 0x00000000,
+    24: 0x80FF7F01, 25: 0x00007F01, 26: 0xFFFF80FF,
+    27: 0x000080FF, 28: 0x000000FF, 29: 0x00000080,
+    30: 0x7788C3D4, 31: 0x7788C3D4,
+    32: 0x7F0180FF, 33: 0xDEAD80FF, 34: 0x7F0180FF,
+    35: 0x00000001, 36: 0x0000007F, 37: 0x00007F01,
+    38: 0x00000096, 39: 0x00000004, 40: 0x00000004,
+    41: 0x000080FF, 42: 0x12345677, 43: 0x00000056,
+    44: 0x00000000,
+}
+
+
 CASES = {
     "compact": compact_case,
     "conflicts": conflicts_case,
     "control_flow": control_flow_case,
+    "full_int": full_int_case,
     "intra_raw": intra_raw_case,
     "late_bypass": late_bypass_case,
     "mul_pipe": mul_pipe_case,
@@ -421,9 +610,17 @@ CASES = {
 }
 
 
-def write_case(words, out_dir):
+def write_case(words, out_dir, expected_mem=None):
     golden = Golden()
     golden.run(words)
+
+    if expected_mem is not None:
+        for index, expected in expected_mem.items():
+            actual = golden.lw(SCRATCH + index * 4)
+            if actual != expected:
+                raise AssertionError(
+                    "golden self-check mem[%d]=%08x expected %08x" %
+                    (index, actual, expected))
 
     with open(out_dir + "/test.hex", "w") as f:
         for word in words:
@@ -449,7 +646,8 @@ def main():
     args = parser.parse_args()
 
     words = CASES[args.case]()
-    commits = write_case(words, args.out_dir.rstrip("/"))
+    expected_mem = FULL_INT_EXPECTED if args.case == "full_int" else None
+    commits = write_case(words, args.out_dir.rstrip("/"), expected_mem)
     print("case=%s words=%d commits=%d base=%08x" %
           (args.case, len(words), commits, BASE))
 

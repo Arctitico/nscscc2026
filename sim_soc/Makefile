@@ -26,7 +26,7 @@ SOC_SRCS = $(SOC_DIR)/sram_ctrl.sv $(SOC_DIR)/uart_phy.sv $(SOC_DIR)/uart_mm.sv 
 
 SRCS = $(CPU_SRCS) $(SOC_SRCS)
 
-.PHONY: run rand fuzz fuzz-sram-331 supervisor perf-images perf-build \
+.PHONY: run rand fuzz fuzz-sram-331 full-int supervisor perf-images perf-build \
         perf-simple perf-stream perf-matrix perf-mixed perf-cryptonight \
         perf-all level1 uart write-buffer icache-selfmod selfmod \
         dcache-policy dcache-adaptive sram-timing lint clean
@@ -118,6 +118,12 @@ PERF_CRYPTO_OUT   = perf_crypto_expected.hex
 
 rand:
 	python3 ../sim/randgen.py --seed $(SEED) --n $(N) $(GENFLAGS) --quiet
+	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
+	./obj_dir/Vtb_soc_rand
+
+# 全部新增非除法整数指令，经真实 mem_bridge/SRAM 多周期路径验证。
+full-int:
+	python3 ../sim/fifo_regress.py --case full_int >/dev/null
 	verilator $(RFLAGS) $(SRCS) tb_soc_rand.sv
 	./obj_dir/Vtb_soc_rand
 
