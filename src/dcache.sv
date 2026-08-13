@@ -62,7 +62,9 @@ reg [2:0] sample_count [0:7];
 reg       word_mode [0:7];
 reg [3:0] probe_count [0:7];
 
-wire [2:0] train_idx = train_pc[4:2];
+// 这三位同时寻址多组 stride/policy LUTRAM，物理扇出远高于逻辑上的表项
+// 数量。允许综合器复制地址驱动，缩短 req_pc -> predictor table 的布线。
+(* max_fanout = 32 *) wire [2:0] train_idx = train_pc[4:2];
 wire [27:0] train_line = train_addr[31:4];
 wire train_match = pred_valid[train_idx] &&
                    (pred_pc_tag[train_idx] == train_pc[31:5]);

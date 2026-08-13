@@ -22,27 +22,46 @@ module regfile(
     input  wire [31:0] rf_wdata2
 );
 
-reg [31:0] rf[31:0];
+(* ram_style = "distributed" *) reg [31:0] rf_bank0 [0:31];
+(* ram_style = "distributed" *) reg [31:0] rf_bank1 [0:31];
+reg [31:0] latest_bank;
 
-// WRITE: 两个写端口同时写同一寄存器时, 程序序靠后的 port2 优先
+wire write0 = |rf_we1 && (rf_waddr1 != 5'b0);
+wire write1 = |rf_we2 && (rf_waddr2 != 5'b0);
+
 always @(posedge clk) begin
-    if (|rf_we1 && rf_waddr1 != 5'b0)
-        rf[rf_waddr1] <= rf_wdata1;
-    if (|rf_we2 && rf_waddr2 != 5'b0)
-        rf[rf_waddr2] <= rf_wdata2;
-    // port2 的赋值在 port1 之后, Verilog 语义保证 port2 写入优先
+    if (write0)
+        rf_bank0[rf_waddr1] <= rf_wdata1;
 end
 
-// READ OUT 1
-assign rf_rdata1 = (rf_raddr1 == 5'b0) ? 32'b0 : rf[rf_raddr1];
+always @(posedge clk) begin
+    if (write1)
+        rf_bank1[rf_waddr2] <= rf_wdata2;
+end
 
-// READ OUT 2
-assign rf_rdata2 = (rf_raddr2 == 5'b0) ? 32'b0 : rf[rf_raddr2];
+always @(posedge clk) begin
+    if (write0)
+        latest_bank[rf_waddr1] <= 1'b0;
+    if (write1)
+        latest_bank[rf_waddr2] <= 1'b1;
+end
 
-// READ OUT 3
-assign rf_rdata3 = (rf_raddr3 == 5'b0) ? 32'b0 : rf[rf_raddr3];
+wire [31:0] bank0_rdata1 = rf_bank0[rf_raddr1];
+wire [31:0] bank0_rdata2 = rf_bank0[rf_raddr2];
+wire [31:0] bank0_rdata3 = rf_bank0[rf_raddr3];
+wire [31:0] bank0_rdata4 = rf_bank0[rf_raddr4];
+wire [31:0] bank1_rdata1 = rf_bank1[rf_raddr1];
+wire [31:0] bank1_rdata2 = rf_bank1[rf_raddr2];
+wire [31:0] bank1_rdata3 = rf_bank1[rf_raddr3];
+wire [31:0] bank1_rdata4 = rf_bank1[rf_raddr4];
 
-// READ OUT 4
-assign rf_rdata4 = (rf_raddr4 == 5'b0) ? 32'b0 : rf[rf_raddr4];
+assign rf_rdata1 = (rf_raddr1 == 5'b0) ? 32'b0 :
+                   (latest_bank[rf_raddr1] ? bank1_rdata1 : bank0_rdata1);
+assign rf_rdata2 = (rf_raddr2 == 5'b0) ? 32'b0 :
+                   (latest_bank[rf_raddr2] ? bank1_rdata2 : bank0_rdata2);
+assign rf_rdata3 = (rf_raddr3 == 5'b0) ? 32'b0 :
+                   (latest_bank[rf_raddr3] ? bank1_rdata3 : bank0_rdata3);
+assign rf_rdata4 = (rf_raddr4 == 5'b0) ? 32'b0 :
+                   (latest_bank[rf_raddr4] ? bank1_rdata4 : bank0_rdata4);
 
 endmodule
